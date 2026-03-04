@@ -20,6 +20,7 @@ def create_provider(config: dict) -> BaseProvider:
             return OllamaProvider(
                 base_url=cfg.get("baseUrl", "http://localhost:11434"),
                 model=cfg.get("model", "llama3.1"),
+                think=cfg.get("think"),
             )
         case "gemini":
             return GeminiProvider(

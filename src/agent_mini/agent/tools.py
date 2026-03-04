@@ -52,6 +52,27 @@ TOOL_DEFS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "append_file",
+            "description": "Append content to an existing file (or create it if missing).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path to append to.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content to append at the end of the file.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "write_file",
             "description": "Create or overwrite a file with the given content. Parent directories are created automatically.",
             "parameters": {
@@ -85,6 +106,28 @@ TOOL_DEFS: list[dict] = [
                     }
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Search for text/regex in files and return matching lines with file paths and line numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (regular expression).",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Directory to search in (defaults to workspace root).",
+                        "default": ".",
+                    },
+                },
+                "required": ["query"],
             },
         },
     },
@@ -187,10 +230,16 @@ class ToolExecutor:
                     return await self._shell_exec(arguments["command"])
                 case "read_file":
                     return self._read_file(arguments["path"])
+                case "append_file":
+                    return self._append_file(arguments["path"], arguments["content"])
                 case "write_file":
                     return self._write_file(arguments["path"], arguments["content"])
                 case "list_directory":
                     return self._list_directory(arguments.get("path", "."))
+                case "search_files":
+                    return await self._search_files(
+                        arguments["query"], arguments.get("path", ".")
+                    )
                 case "web_search":
                     return await self._web_search(arguments["query"])
                 case "memory_store":
@@ -254,6 +303,13 @@ class ToolExecutor:
         p.write_text(content)
         return f"Written {len(content)} bytes → {p}"
 
+    def _append_file(self, path: str, content: str) -> str:
+        p = self._resolve_path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(content)
+        return f"Appended {len(content)} bytes → {p}"
+
     def _list_directory(self, path: str) -> str:
         p = self._resolve_path(path)
         entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name))
@@ -262,6 +318,37 @@ class ToolExecutor:
             prefix = "📁 " if e.is_dir() else "📄 "
             lines.append(f"{prefix}{e.name}")
         return "\n".join(lines) or "(empty directory)"
+
+    async def _search_files(self, query: str, path: str) -> str:
+        root = self._resolve_path(path)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "rg",
+                "--line-number",
+                "--no-heading",
+                "--hidden",
+                "--glob",
+                "!.git",
+                query,
+                str(root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self._workspace),
+            )
+        except FileNotFoundError:
+            return "Error: ripgrep (rg) is not installed."
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode not in (0, 1):
+            err = stderr.decode(errors="replace").strip()
+            return f"Error: search failed: {err or 'unknown error'}"
+
+        out = stdout.decode(errors="replace").strip()
+        if not out:
+            return "No matches found."
+        if len(out) > 100_000:
+            out = out[:100_000] + "\n… (truncated)"
+        return out
 
     async def _web_search(self, query: str) -> str:
         async with httpx.AsyncClient(timeout=15) as client:

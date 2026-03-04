@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Awaitable, Callable
 
 from ..providers.base import BaseProvider, ChatResponse
 from .context import build_system_prompt
@@ -11,6 +12,7 @@ from .memory import Memory
 from .tools import ToolExecutor
 
 log = logging.getLogger("agent-mini")
+StreamEmitter = Callable[[str], Awaitable[None]]
 
 
 class AgentLoop:
@@ -35,11 +37,17 @@ class AgentLoop:
         self.max_iterations: int = config.get("agent", {}).get("maxIterations", 20)
         self.temperature: float = config.get("agent", {}).get("temperature", 0.7)
 
-    async def run(self, user_message: str, conversation: list[dict]) -> str:
+    async def run(
+        self,
+        user_message: str,
+        conversation: list[dict],
+        on_stream: StreamEmitter | None = None,
+    ) -> str:
         """Process *user_message* and return the assistant's final text reply.
 
         *conversation* is mutated in-place (appended with the new user/assistant
         turns) so the caller can maintain session state.
+        When *on_stream* is provided, partial text deltas are emitted in real time.
         """
         system_prompt = build_system_prompt(self.config, self.memory)
         tool_defs = self.tools.get_tool_defs()
@@ -53,11 +61,19 @@ class AgentLoop:
             log.debug("iteration %d / %d", iteration + 1, self.max_iterations)
 
             try:
-                response: ChatResponse = await self.provider.chat(
-                    messages,
-                    tools=tool_defs or None,
-                    temperature=self.temperature,
-                )
+                if on_stream:
+                    response = await self.provider.chat_stream(
+                        messages,
+                        on_delta=on_stream,
+                        tools=tool_defs or None,
+                        temperature=self.temperature,
+                    )
+                else:
+                    response = await self.provider.chat(
+                        messages,
+                        tools=tool_defs or None,
+                        temperature=self.temperature,
+                    )
             except Exception as e:
                 log.error("Provider error: %s", e)
                 return f"Error communicating with LLM: {e}"

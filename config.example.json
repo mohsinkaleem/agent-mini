@@ -3,7 +3,8 @@
   "providers": {
     "ollama": {
       "baseUrl": "http://localhost:11434",
-      "model": "llama3.1"
+      "model": "llama3.1",
+      "think": false
     },
     "gemini": {
       "apiKey": "",
@@ -29,15 +30,7 @@
       "enabled": false,
       "token": "",
       "allowFrom": [],
-      "network": {
-        "proxy": "",
-        "trustEnv": true,
-        "caCertFile": "",
-        "compatibilityTls": false,
-        "insecureSkipVerify": false,
-        "baseUrl": "",
-        "baseFileUrl": ""
-      }
+      "streamResponses": true
     },
     "whatsapp": {
       "enabled": false,

@@ -80,7 +80,7 @@ class WhatsAppChannel(BaseChannel):
             log.info("[whatsapp] %s: %s", phone, text[:120])
 
             if self._handler:
-                response = await self._handler("whatsapp", phone, text)
+                response = await self._handler("whatsapp", phone, text, None)
                 await self.send(phone, response)
 
             return web.json_response({"ok": True})

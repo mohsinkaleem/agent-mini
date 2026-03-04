@@ -72,11 +72,19 @@ ollama pull llama3.1
   "providers": {
     "ollama": {
       "baseUrl": "http://localhost:11434",
-      "model": "llama3.1"
+      "model": "llama3.1",
+      "think": false
     }
   }
 }
 ```
+
+`think` controls Ollama thinking mode:
+- `false` (default): thinking off
+- `true`: thinking on
+- `"low" | "medium" | "high"`: GPT-OSS thinking levels
+
+References: [Ollama thinking docs](https://docs.ollama.com/capabilities/thinking), [Ollama blog post](https://ollama.com/blog/thinking)
 
 ### Gemini
 
@@ -148,15 +156,7 @@ Any server that implements the OpenAI chat completions API.
       "enabled": true,
       "token": "YOUR_BOT_TOKEN",
       "allowFrom": ["YOUR_USER_ID"],
-      "network": {
-        "proxy": "",
-        "trustEnv": true,
-        "caCertFile": "",
-        "compatibilityTls": false,
-        "insecureSkipVerify": false,
-        "baseUrl": "",
-        "baseFileUrl": ""
-      }
+      "streamResponses": true
     }
   }
 }
@@ -164,18 +164,7 @@ Any server that implements the OpenAI chat completions API.
 
 4. Run: `agent-mini gateway`
 
-`network` options are optional:
-- `proxy`: explicit proxy URL (e.g. `http://127.0.0.1:7890`)
-- `trustEnv`: use `HTTP(S)_PROXY` from environment
-- `caCertFile`: PEM bundle used for TLS verification (corporate SSL inspection CAs)
-- `compatibilityTls`: force conservative TLS 1.2 profile for strict middleboxes
-- `insecureSkipVerify`: disable certificate verification (last resort only)
-- `baseUrl` / `baseFileUrl`: custom Telegram Bot API endpoint (self-hosted/mirrored)
-
-If you see OpenDNS/Cisco Umbrella errors, your network is intercepting or blocking Telegram. In that case:
-1. Prefer an allowed network, VPN, or `network.proxy`
-2. Install your corporate root CA if TLS inspection is required
-3. Use `insecureSkipVerify: true` only as a temporary workaround
+`streamResponses: true` enables real-time streamed Telegram replies (native with Ollama; other providers fall back to full-response mode).
 
 ### WhatsApp
 
@@ -207,8 +196,10 @@ The agent has these built-in tools:
 |------|-------------|
 | `shell_exec` | Run any shell command |
 | `read_file` | Read file contents |
+| `append_file` | Append content to a file |
 | `write_file` | Create/overwrite files |
 | `list_directory` | Browse the filesystem |
+| `search_files` | Search text/regex across files |
 | `web_search` | Brave Search (requires API key) |
 | `memory_store` | Save info to persistent memory |
 | `memory_recall` | Search persistent memory |

@@ -16,8 +16,8 @@ Workspace: {workspace}
 
 ## Available tools
 - **shell_exec** — run shell commands
-- **read_file** / **write_file** — read and write files
-- **list_directory** — browse the filesystem
+- **read_file** / **write_file** / **append_file** — read and write files
+- **list_directory** / **search_files** — browse and search the filesystem
 - **web_search** — search the internet (if configured)
 - **memory_store** / **memory_recall** — persistent memory across conversations
 

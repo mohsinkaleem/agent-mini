@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import httpx
 
-from .base import BaseProvider, ChatResponse, ToolCall
+from .base import BaseProvider, ChatResponse, ToolCall, parse_arguments
 
 _API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -59,9 +58,7 @@ class GeminiProvider(BaseProvider):
                     parts.append({"text": msg["content"]})
                 for tc in msg.get("tool_calls") or []:
                     func = tc["function"]
-                    args = func.get("arguments", "{}")
-                    if isinstance(args, str):
-                        args = json.loads(args)
+                    args = parse_arguments(func.get("arguments", {}))
                     parts.append({"functionCall": {"name": func["name"], "args": args}})
                 if parts:
                     contents.append({"role": "model", "parts": parts})

@@ -5,8 +5,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Awaitable, Callable
 
-# (channel_name, user_id, text) → response text
-MessageHandler = Callable[[str, str, str], Awaitable[str]]
+StreamEmitter = Callable[[str], Awaitable[None]]
+
+# (channel_name, user_id, text, stream_emitter?) → response text
+MessageHandler = Callable[[str, str, str, StreamEmitter | None], Awaitable[str]]
 
 
 class BaseChannel(ABC):

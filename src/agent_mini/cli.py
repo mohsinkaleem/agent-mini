@@ -65,6 +65,7 @@ def init():
                 "ollama": {
                     "baseUrl": "http://localhost:11434",
                     "model": "llama3.1",
+                    "think": False,
                 },
                 "gemini": {"apiKey": "", "model": "gemini-2.0-flash"},
                 "github_copilot": {"token": "", "model": "gpt-4o"},
@@ -80,7 +81,12 @@ def init():
                 "systemPrompt": "",
             },
             "channels": {
-                "telegram": {"enabled": False, "token": "", "allowFrom": []},
+                "telegram": {
+                    "enabled": False,
+                    "token": "",
+                    "allowFrom": [],
+                    "streamResponses": True,
+                },
                 "whatsapp": {"enabled": False, "allowFrom": []},
             },
             "tools": {
@@ -224,6 +230,7 @@ async def _gateway(config: dict) -> None:
             TelegramChannel(
                 token=tg["token"],
                 allow_from=tg.get("allowFrom", []),
+                stream_responses=tg.get("streamResponses", True),
             )
         )
 

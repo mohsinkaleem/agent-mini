@@ -6,10 +6,9 @@ LM Studio, vLLM, llama.cpp, text-generation-webui, Oobabooga, etc.
 
 from __future__ import annotations
 
-import json
 import httpx
 
-from .base import BaseProvider, ChatResponse, ToolCall
+from .base import BaseProvider, ChatResponse, parse_openai_tool_calls
 
 
 class LocalProvider(BaseProvider):
@@ -63,21 +62,6 @@ class LocalProvider(BaseProvider):
         choice = data["choices"][0]
         msg = choice["message"]
         content = msg.get("content") or None
-        tool_calls: list[ToolCall] | None = None
-
-        if msg.get("tool_calls"):
-            tool_calls = []
-            for tc in msg["tool_calls"]:
-                func = tc["function"]
-                args = func.get("arguments", "{}")
-                if isinstance(args, str):
-                    args = json.loads(args)
-                tool_calls.append(
-                    ToolCall(
-                        id=tc.get("id", f"call_{len(tool_calls)}"),
-                        name=func["name"],
-                        arguments=args,
-                    )
-                )
+        tool_calls = parse_openai_tool_calls(msg.get("tool_calls"))
 
         return ChatResponse(content=content, tool_calls=tool_calls)

@@ -11,11 +11,9 @@ name = "agent-mini"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "certifi" },
     { name = "click" },
     { name = "httpx" },
     { name = "rich" },
-    { name = "truststore" },
 ]
 
 [package.optional-dependencies]
@@ -34,13 +32,11 @@ whatsapp = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'all'", specifier = ">=3.9" },
     { name = "aiohttp", marker = "extra == 'whatsapp'", specifier = ">=3.9" },
-    { name = "certifi", specifier = ">=2024.0" },
     { name = "click", specifier = ">=8.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "python-telegram-bot", marker = "extra == 'all'", specifier = ">=21.0" },
     { name = "python-telegram-bot", marker = "extra == 'telegram'", specifier = ">=21.0" },
     { name = "rich", specifier = ">=13.0" },
-    { name = "truststore", specifier = ">=0.9" },
 ]
 provides-extras = ["telegram", "whatsapp", "all"]
 
@@ -641,15 +637,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b3/c6/f3b320c27991c46f43ee9d856302c70dc2d0fb2dba4842ff739d5f46b393/rich-14.3.3.tar.gz", hash = "sha256:b8daa0b9e4eef54dd8cf7c86c03713f53241884e814f4e2f5fb342fe520f639b", size = 230582, upload-time = "2026-02-19T17:23:12.474Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/14/25/b208c5683343959b670dc001595f2f3737e051da617f66c31f7c4fa93abc/rich-14.3.3-py3-none-any.whl", hash = "sha256:793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d", size = 310458, upload-time = "2026-02-19T17:23:13.732Z" },
-]
-
-[[package]]
-name = "truststore"
-version = "0.10.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/53/a3/1585216310e344e8102c22482f6060c7a6ea0322b63e026372e6dcefcfd6/truststore-0.10.4.tar.gz", hash = "sha256:9d91bd436463ad5e4ee4aba766628dd6cd7010cf3e2461756b3303710eebc301", size = 26169, upload-time = "2025-08-12T18:49:02.73Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl", hash = "sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981", size = 18660, upload-time = "2025-08-12T18:49:01.46Z" },
 ]
 
 [[package]]
