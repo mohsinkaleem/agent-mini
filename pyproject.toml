@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "agent-mini"
 version = "0.1.0"
-description = "Ultra-lightweight personal AI agent with Telegram & WhatsApp support"
+description = "Ultra-lightweight personal AI agent with Telegram support"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -17,10 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 telegram = ["python-telegram-bot>=21.0"]
-whatsapp = ["aiohttp>=3.9"]
 all = [
     "python-telegram-bot>=21.0",
-    "aiohttp>=3.9",
 ]
 
 [project.scripts]
@@ -28,8 +26,3 @@ agent-mini = "agent_mini.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_mini"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"whatsapp-bridge/index.js" = "agent_mini/whatsapp_bridge/index.js"
-"whatsapp-bridge/package.json" = "agent_mini/whatsapp_bridge/package.json"
-"whatsapp-bridge/package-lock.json" = "agent_mini/whatsapp_bridge/package-lock.json"

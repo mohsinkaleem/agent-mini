@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Awaitable, Callable
 
-from ..providers.base import BaseProvider, ChatResponse
+from ..providers.base import BaseProvider
 from .context import build_system_prompt
 from .memory import Memory
 from .tools import ToolExecutor

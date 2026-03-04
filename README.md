@@ -4,7 +4,7 @@
 
 - ~1,500 lines of Python (core agent)
 - 4 LLM providers: **Ollama**, **Gemini**, **GitHub Copilot**, **Local** (any OpenAI-compatible)
-- 2 chat channels: **Telegram**, **WhatsApp**
+- 1 chat channels: **Telegram**
 - Built-in tools: shell, files, web search & browse, persistent memory
 - Zero-framework: pure `httpx` + `asyncio` — no LangChain, no LiteLLM
 - **Free web search** — DuckDuckGo scraping, no API key required
@@ -14,13 +14,18 @@
 ### 1. Install
 
 ```bash
-# From source (recommended)
+# Recommended: Global install using uv (isolates from system Python)
 git clone https://github.com/your-repo/agent-mini.git
 cd agent-mini
-pip install -e ".[all]"
 
-# Or with uv
-uv pip install -e ".[all]"
+# Option A: Install and link for development (changes in src/ take effect immediately)
+uv tool install --editable ".[all]"
+
+# Option B: Standard global install (copies files, no linking)
+uv tool install ".[all]"
+
+# Or for local development only:
+uv sync --extra all
 ```
 
 ### 2. Initialise
@@ -41,7 +46,7 @@ agent-mini chat
 agent-mini chat -m "What's the weather in London?"
 ```
 
-### 4. Gateway (Telegram / WhatsApp)
+### 4. Gateway (Telegram)
 
 ```bash
 agent-mini gateway
@@ -166,51 +171,6 @@ Any server that implements the OpenAI chat completions API.
 4. Run: `agent-mini gateway`
 
 `streamResponses: true` enables real-time streamed Telegram replies (native with Ollama; other providers fall back to full-response mode).
-
-### WhatsApp
-
-Requires **Node.js ≥ 18**.
-
-1. Configure:
-
-```json
-{
-  "channels": {
-    "whatsapp": {
-      "enabled": true,
-      "allowFrom": ["+1234567890"]
-    }
-  }
-}
-```
-
-2. Run: `agent-mini gateway`
-3. Scan the QR code that appears in the terminal with WhatsApp → Settings → Linked Devices
-
-### WhatsApp Bridge: Build + Packaging
-
-What it does:
-- `whatsapp-bridge/index.js` is a Node process that connects to WhatsApp Web, receives incoming messages, and forwards them to the Python agent webhook.
-- It also exposes `POST /send` so Python can send replies back to WhatsApp chats.
-
-How it runs by default:
-- No manual JS build is required for normal usage.
-- On first WhatsApp gateway start, Agent Mini runs `npm install` in the bridge directory if `node_modules` is missing.
-- Then it launches the bridge with `node index.js`.
-
-Packaging behavior:
-- Python wheel includes bridge source files (`index.js`, `package.json`, `package-lock.json`).
-- `node_modules` are **not** bundled, so package size stays small.
-
-Optional build step (for maintainers):
-```bash
-cd whatsapp-bridge
-npm install
-npm run build
-```
-- This creates a bundled bridge file at `whatsapp-bridge/dist/index.cjs`.
-- Runtime prefers `dist/index.cjs` when present, otherwise uses `index.js`.
-
 ---
 
 ## Tools
@@ -261,7 +221,7 @@ Set `"restrictToWorkspace": true` to sandbox file and shell operations to the wo
 | `agent-mini init` | Create config and workspace |
 | `agent-mini chat` | Interactive chat |
 | `agent-mini chat -m "..."` | Single message |
-| `agent-mini gateway` | Start Telegram/WhatsApp gateway |
+| `agent-mini gateway` | Start Telegram gateway |
 | `agent-mini login github_copilot` | OAuth login for GitHub Copilot |
 | `agent-mini status` | Show config status |
 
@@ -289,10 +249,6 @@ agent-mini/
 │   └── channels/
 │       ├── base.py         # Channel interface
 │       ├── telegram.py     # Telegram bot
-│       └── whatsapp.py     # WhatsApp bridge client
-├── whatsapp-bridge/        # Node.js WhatsApp Web bridge
-│   ├── package.json
-│   └── index.js
 ├── pyproject.toml
 └── config.example.json
 ```
@@ -305,7 +261,6 @@ Key paths:
 - Config: `~/.agent-mini/config.json`
 - Workspace: `~/.agent-mini/workspace/`
 - Memory: `~/.agent-mini/memory.json`
-- WhatsApp data: `~/.agent-mini/whatsapp-data/`
 
 ## License
 

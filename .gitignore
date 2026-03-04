@@ -28,9 +28,6 @@ Thumbs.db
 
 # Project specific
 node_modules/
-whatsapp-bridge/node_modules/
-whatsapp-bridge/.wwebjs_auth/
-whatsapp-bridge/.wwebjs_cache/
 
 # Config (contains secrets)
 # ~/.agent-mini/ is outside the repo, but just in case:

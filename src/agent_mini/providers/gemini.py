@@ -51,9 +51,7 @@ class GeminiProvider(BaseProvider):
                 system = msg["content"]
 
             elif role == "user":
-                contents.append(
-                    {"role": "user", "parts": [{"text": msg["content"]}]}
-                )
+                contents.append({"role": "user", "parts": [{"text": msg["content"]}]})
 
             elif role == "assistant":
                 parts: list[dict] = []

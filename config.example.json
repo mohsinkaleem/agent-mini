@@ -31,10 +31,6 @@
       "token": "",
       "allowFrom": [],
       "streamResponses": true
-    },
-    "whatsapp": {
-      "enabled": false,
-      "allowFrom": []
     }
   },
   "tools": {

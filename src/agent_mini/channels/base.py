@@ -32,5 +32,5 @@ class BaseChannel(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Channel identifier (e.g. ``telegram``, ``whatsapp``)."""
+        """Channel identifier (e.g. ``telegram``)."""
         ...

@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import sys
-from pathlib import Path
 
 import click
 from rich.console import Console
@@ -87,7 +84,6 @@ def init():
                     "allowFrom": [],
                     "streamResponses": True,
                 },
-                "whatsapp": {"enabled": False, "allowFrom": []},
             },
             "tools": {
                 "restrictToWorkspace": False,
@@ -192,14 +188,14 @@ def _render(text: str, plain: bool) -> None:
 
 
 # ======================================================================
-# gateway  (Telegram / WhatsApp)
+# gateway  (Telegram)
 # ======================================================================
 
 
 @cli.command()
 @click.option("-v", "--verbose", is_flag=True, help="Show debug logs.")
 def gateway(verbose: bool):
-    """Start the messaging gateway (Telegram / WhatsApp)."""
+    """Start the messaging gateway (Telegram)."""
     _setup_logging(verbose)
     config = load_config()
     if not config:
@@ -212,7 +208,7 @@ async def _gateway(config: dict) -> None:
     from .providers import create_provider
     from .agent import AgentLoop, Memory
     from .bus import MessageBus
-    from .channels import TelegramChannel, WhatsAppChannel
+    from .channels import TelegramChannel
 
     provider = create_provider(config)
     memory = Memory(
@@ -233,16 +229,6 @@ async def _gateway(config: dict) -> None:
                 token=tg["token"],
                 allow_from=tg.get("allowFrom", []),
                 stream_responses=tg.get("streamResponses", True),
-            )
-        )
-
-    # WhatsApp
-    wa = ch_cfg.get("whatsapp", {})
-    if wa.get("enabled"):
-        channels.append(
-            WhatsAppChannel(
-                allow_from=wa.get("allowFrom", []),
-                bridge_dir=wa.get("bridgeDir"),
             )
         )
 
@@ -305,7 +291,7 @@ def login(provider_name: str):
 
     console.print(f"\n[green]✓ Token saved to {CONFIG_FILE}[/green]")
     console.print(
-        "  Set [cyan]\"provider\": \"github_copilot\"[/cyan] in config to use it."
+        '  Set [cyan]"provider": "github_copilot"[/cyan] in config to use it.'
     )
 
 
@@ -342,6 +328,4 @@ def status():
     console.print(
         f"  Memory    : {'[green]enabled[/green]' if mem else '[dim]disabled[/dim]'}"
     )
-    console.print(
-        f"  Workspace : {config.get('workspace', str(DEFAULT_WORKSPACE))}"
-    )
+    console.print(f"  Workspace : {config.get('workspace', str(DEFAULT_WORKSPACE))}")

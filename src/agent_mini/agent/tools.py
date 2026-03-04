@@ -1,9 +1,8 @@
-"""""Built-in agent tools — shell, files, web search/fetch, memory."""
+""" ""Built-in agent tools — shell, files, web search/fetch, memory."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 import shutil
@@ -47,33 +46,75 @@ def _param(desc: str, default: str | None = None) -> dict:
 
 
 _CORE_TOOLS: list[dict] = [
-    _tool("shell_exec", "Execute a shell command and return stdout+stderr.",
-          {"command": _param("The shell command to run.")}, ["command"]),
-    _tool("read_file", "Read the full contents of a file.",
-          {"path": _param("Absolute or workspace-relative file path.")}, ["path"]),
-    _tool("append_file", "Append content to a file (creates it if missing).",
-          {"path": _param("File path."), "content": _param("Content to append.")},
-          ["path", "content"]),
-    _tool("write_file", "Create or overwrite a file. Parent dirs created automatically.",
-          {"path": _param("File path."), "content": _param("File content.")},
-          ["path", "content"]),
-    _tool("list_directory", "List files and folders in a directory.",
-          {"path": _param("Directory path (defaults to workspace root).", ".")}, []),
-    _tool("search_files", "Search for text/regex in files. Returns matching lines with paths and line numbers.",
-          {"query": _param("Search query (regex)."),
-           "path": _param("Directory to search in.", ".")}, ["query"]),
-    _tool("memory_store", "Store important information in persistent memory for later recall.",
-          {"key": _param("Short label/category."),
-           "value": _param("The information to store.")}, ["key", "value"]),
-    _tool("memory_recall", "Search persistent memory for previously stored information.",
-          {"query": _param("Keywords to search for.")}, ["query"]),
+    _tool(
+        "shell_exec",
+        "Execute a shell command and return stdout+stderr.",
+        {"command": _param("The shell command to run.")},
+        ["command"],
+    ),
+    _tool(
+        "read_file",
+        "Read the full contents of a file.",
+        {"path": _param("Absolute or workspace-relative file path.")},
+        ["path"],
+    ),
+    _tool(
+        "append_file",
+        "Append content to a file (creates it if missing).",
+        {"path": _param("File path."), "content": _param("Content to append.")},
+        ["path", "content"],
+    ),
+    _tool(
+        "write_file",
+        "Create or overwrite a file. Parent dirs created automatically.",
+        {"path": _param("File path."), "content": _param("File content.")},
+        ["path", "content"],
+    ),
+    _tool(
+        "list_directory",
+        "List files and folders in a directory.",
+        {"path": _param("Directory path (defaults to workspace root).", ".")},
+        [],
+    ),
+    _tool(
+        "search_files",
+        "Search for text/regex in files. Returns matching lines with paths and line numbers.",
+        {
+            "query": _param("Search query (regex)."),
+            "path": _param("Directory to search in.", "."),
+        },
+        ["query"],
+    ),
+    _tool(
+        "memory_store",
+        "Store important information in persistent memory for later recall.",
+        {
+            "key": _param("Short label/category."),
+            "value": _param("The information to store."),
+        },
+        ["key", "value"],
+    ),
+    _tool(
+        "memory_recall",
+        "Search persistent memory for previously stored information.",
+        {"query": _param("Keywords to search for.")},
+        ["query"],
+    ),
 ]
 
 _WEB_TOOLS: list[dict] = [
-    _tool("web_search", "Search the web using DuckDuckGo (free, no API key). Returns top results with titles, URLs, and snippets.",
-          {"query": _param("Search query.")}, ["query"]),
-    _tool("web_fetch", "Fetch a web page and return its content as readable plain text. Use after web_search to read full articles.",
-          {"url": _param("The URL to fetch.")}, ["url"]),
+    _tool(
+        "web_search",
+        "Search the web using DuckDuckGo (free, no API key). Returns top results with titles, URLs, and snippets.",
+        {"query": _param("Search query.")},
+        ["query"],
+    ),
+    _tool(
+        "web_fetch",
+        "Fetch a web page and return its content as readable plain text. Use after web_search to read full articles.",
+        {"url": _param("The URL to fetch.")},
+        ["url"],
+    ),
 ]
 
 
@@ -95,15 +136,42 @@ class _HTMLToText(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list) -> None:
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
-        if tag in ("br", "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
-                    "li", "tr", "blockquote", "section", "article"):
+        if tag in (
+            "br",
+            "p",
+            "div",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "li",
+            "tr",
+            "blockquote",
+            "section",
+            "article",
+        ):
             self._parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in self._SKIP_TAGS and self._skip_depth > 0:
             self._skip_depth -= 1
-        if tag in ("p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
-                    "li", "tr", "blockquote", "section", "article"):
+        if tag in (
+            "p",
+            "div",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "li",
+            "tr",
+            "blockquote",
+            "section",
+            "article",
+        ):
             self._parts.append("\n")
 
     def handle_data(self, data: str) -> None:
@@ -133,35 +201,47 @@ def _parse_ddg_html(html: str) -> list[dict[str, str]]:
     # We use regex for reliability — no extra dependencies.
     blocks = re.findall(
         r'<div[^>]*class="[^"]*result[_ ]results_links[^"]*"[^>]*>(.*?)</div>\s*</div>',
-        html, re.DOTALL,
+        html,
+        re.DOTALL,
     )
     if not blocks:
         # Fallback: try grabbing <a class="result__a"> directly
         blocks = re.findall(
             r'<div[^>]*class="[^"]*links_main[^"]*"[^>]*>(.*?)(?=<div[^>]*class="[^"]*links_main|$)',
-            html, re.DOTALL,
+            html,
+            re.DOTALL,
         )
 
     for block in blocks:
         # Extract URL from href in result__a or result-link
         url_match = re.search(r'href="([^"]+)"', block)
-        title_match = re.search(r'class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL)
-        snippet_match = re.search(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</[at]>', block, re.DOTALL)
+        title_match = re.search(
+            r'class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL
+        )
+        snippet_match = re.search(
+            r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</[at]>', block, re.DOTALL
+        )
 
         if not url_match:
             continue
 
         raw_url = url_match.group(1)
         # DuckDuckGo wraps URLs in a redirect — extract the real one
-        uddg_match = re.search(r'[?&]uddg=([^&]+)', raw_url)
+        uddg_match = re.search(r"[?&]uddg=([^&]+)", raw_url)
         url = unquote(uddg_match.group(1)) if uddg_match else raw_url
 
         # Skip DuckDuckGo internal links
         if url.startswith("/") or "duckduckgo.com" in url:
             continue
 
-        title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else url
-        snippet = re.sub(r'<[^>]+>', '', snippet_match.group(1)).strip() if snippet_match else ""
+        title = (
+            re.sub(r"<[^>]+>", "", title_match.group(1)).strip() if title_match else url
+        )
+        snippet = (
+            re.sub(r"<[^>]+>", "", snippet_match.group(1)).strip()
+            if snippet_match
+            else ""
+        )
 
         results.append({"title": title, "url": url, "snippet": snippet})
 
@@ -301,8 +381,16 @@ class ToolExecutor:
         # Prefer ripgrep, fall back to grep
         rg = shutil.which("rg")
         if rg:
-            cmd = [rg, "--line-number", "--no-heading", "--hidden",
-                   "--glob", "!.git", query, str(root)]
+            cmd = [
+                rg,
+                "--line-number",
+                "--no-heading",
+                "--hidden",
+                "--glob",
+                "!.git",
+                query,
+                str(root),
+            ]
         else:
             grep = shutil.which("grep") or "grep"
             cmd = [grep, "-rn", "--include=*", query, str(root)]
@@ -363,7 +451,9 @@ class ToolExecutor:
             "User-Agent": self._BROWSER_UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
-        resp = await self._http.get(url, headers=headers, follow_redirects=True, timeout=20)
+        resp = await self._http.get(
+            url, headers=headers, follow_redirects=True, timeout=20
+        )
         resp.raise_for_status()
 
         content_type = resp.headers.get("content-type", "")
