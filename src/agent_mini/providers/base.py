@@ -96,6 +96,9 @@ class BaseProvider(ABC):
             await on_delta(response.content)
         return response
 
+    async def close(self) -> None:
+        """Clean up resources (e.g. HTTP clients). Override if needed."""
+
     @property
     @abstractmethod
     def name(self) -> str:

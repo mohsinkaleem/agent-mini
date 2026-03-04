@@ -90,7 +90,6 @@ def init():
                 "whatsapp": {"enabled": False, "allowFrom": []},
             },
             "tools": {
-                "webSearch": {"provider": "brave", "apiKey": ""},
                 "restrictToWorkspace": False,
             },
             "memory": {"enabled": True, "maxEntries": 1000},
@@ -138,45 +137,48 @@ async def _chat(config: dict, message: str | None, plain: bool) -> None:
     agent = AgentLoop(provider, config, memory)
     conversation: list[dict] = []
 
-    console.print(
-        f"[bold green]Agent Mini[/bold green] v{__version__}"
-        f" • Provider: [cyan]{provider.name}[/cyan]"
-        f" ({provider.model_name})"
-    )
+    try:
+        console.print(
+            f"[bold green]Agent Mini[/bold green] v{__version__}"
+            f" • Provider: [cyan]{provider.name}[/cyan]"
+            f" ({provider.model_name})"
+        )
 
-    if message:
-        response = await agent.run(message, conversation)
-        _render(response, plain)
-        return
+        if message:
+            response = await agent.run(message, conversation)
+            _render(response, plain)
+            return
 
-    # Interactive REPL
-    console.print(
-        "[dim]Type 'exit' to quit · '/clear' to reset conversation[/dim]\n"
-    )
+        # Interactive REPL
+        console.print(
+            "[dim]Type 'exit' to quit · '/clear' to reset conversation[/dim]\n"
+        )
 
-    while True:
-        try:
-            user_input = console.input("[bold blue]You:[/bold blue] ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]Goodbye![/dim]")
-            break
+        while True:
+            try:
+                user_input = console.input("[bold blue]You:[/bold blue] ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[dim]Goodbye![/dim]")
+                break
 
-        if not user_input:
-            continue
-        if user_input.lower() in {"exit", "quit", "/exit", "/quit", ":q"}:
-            console.print("[dim]Goodbye![/dim]")
-            break
-        if user_input == "/clear":
-            conversation.clear()
-            console.print("[dim]Conversation cleared.[/dim]")
-            continue
+            if not user_input:
+                continue
+            if user_input.lower() in {"exit", "quit", "/exit", "/quit", ":q"}:
+                console.print("[dim]Goodbye![/dim]")
+                break
+            if user_input == "/clear":
+                conversation.clear()
+                console.print("[dim]Conversation cleared.[/dim]")
+                continue
 
-        with console.status("[bold cyan]Thinking…[/bold cyan]"):
-            response = await agent.run(user_input, conversation)
+            with console.status("[bold cyan]Thinking…[/bold cyan]"):
+                response = await agent.run(user_input, conversation)
 
-        console.print()
-        _render(response, plain)
-        console.print()
+            console.print()
+            _render(response, plain)
+            console.print()
+    finally:
+        await agent.close()
 
 
 def _render(text: str, plain: bool) -> None:
@@ -269,6 +271,7 @@ async def _gateway(config: dict) -> None:
         console.print("\n[yellow]Shutting down…[/yellow]")
         for ch in channels:
             await ch.stop()
+        await agent.close()
 
 
 # ======================================================================
@@ -333,12 +336,8 @@ def status():
         console.print(f"    {name:12s} {tag}")
 
     # Tools
-    has_search = bool(
-        config.get("tools", {}).get("webSearch", {}).get("apiKey")
-    )
-    console.print(
-        f"  Web search: {'[green]configured[/green]' if has_search else '[dim]not configured[/dim]'}"
-    )
+    console.print("  Web search: [green]enabled[/green] (DuckDuckGo)")
+    console.print("  Web fetch : [green]enabled[/green]")
     mem = config.get("memory", {}).get("enabled", True)
     console.print(
         f"  Memory    : {'[green]enabled[/green]' if mem else '[dim]disabled[/dim]'}"

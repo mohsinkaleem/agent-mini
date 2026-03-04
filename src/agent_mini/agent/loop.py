@@ -34,8 +34,13 @@ class AgentLoop:
         self.config = config
         self.memory = memory
         self.tools = ToolExecutor(config, memory)
-        self.max_iterations: int = config.get("agent", {}).get("maxIterations", 20)
+        self.max_iterations: int = config.get("agent", {}).get("maxIterations", 30)
         self.temperature: float = config.get("agent", {}).get("temperature", 0.7)
+
+    async def close(self) -> None:
+        """Clean up provider and tool resources."""
+        await self.provider.close()
+        await self.tools.close()
 
     async def run(
         self,

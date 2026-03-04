@@ -5,7 +5,11 @@
   "description": "WhatsApp Web bridge for Agent Mini",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "build": "esbuild index.js --bundle --platform=node --target=node18 --format=cjs --external:typescript --outfile=dist/index.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.1"
   },
   "dependencies": {
     "whatsapp-web.js": "^1.26.0",

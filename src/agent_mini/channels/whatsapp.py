@@ -20,6 +20,7 @@ _WEBHOOK_PORT = 18901  # Python webhook server listens here (receive)
 
 # Default bridge location (relative to package root)
 _BRIDGE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "whatsapp-bridge"
+_PACKAGED_BRIDGE_DIR = Path(__file__).resolve().parent.parent / "whatsapp_bridge"
 
 
 class WhatsAppChannel(BaseChannel):
@@ -98,6 +99,7 @@ class WhatsAppChannel(BaseChannel):
         from aiohttp import web
 
         self._handler = on_message
+        bridge_dir = self._resolve_bridge_dir()
 
         # 1. Start the Python webhook server
         app = web.Application()
@@ -111,16 +113,25 @@ class WhatsAppChannel(BaseChannel):
             "[whatsapp] Webhook listening on http://localhost:%d", _WEBHOOK_PORT
         )
 
-        # 2. Ensure bridge dependencies are installed
-        if not (self._bridge_dir / "node_modules").exists():
-            log.info("[whatsapp] Installing bridge dependencies (npm install)…")
-            subprocess.run(
-                ["npm", "install"],
-                cwd=str(self._bridge_dir),
-                env={**os.environ, "PUPPETEER_SKIP_DOWNLOAD": "true"},
-                check=True,
-                capture_output=True,
-            )
+        # 2. Choose bridge entrypoint:
+        #    - Prefer prebuilt bundle if packaged with Python wheel.
+        #    - Fallback to source mode (requires npm install).
+        bundle_entry = bridge_dir / "dist" / "index.cjs"
+        source_entry = bridge_dir / "index.js"
+        if bundle_entry.exists():
+            entrypoint = bundle_entry
+            log.info("[whatsapp] Using bundled bridge: %s", bundle_entry)
+        else:
+            entrypoint = source_entry
+            if not (bridge_dir / "node_modules").exists():
+                log.info("[whatsapp] Installing bridge dependencies (npm install)…")
+                subprocess.run(
+                    ["npm", "install"],
+                    cwd=str(bridge_dir),
+                    env={**os.environ, "PUPPETEER_SKIP_DOWNLOAD": "true"},
+                    check=True,
+                    capture_output=True,
+                )
 
         # 3. Launch the bridge process
         env = {
@@ -129,8 +140,8 @@ class WhatsAppChannel(BaseChannel):
             "PORT": str(_BRIDGE_PORT),
         }
         self._bridge_proc = subprocess.Popen(
-            ["node", "index.js"],
-            cwd=str(self._bridge_dir),
+            ["node", str(entrypoint)],
+            cwd=str(bridge_dir),
             env=env,
         )
         log.info(
@@ -161,3 +172,14 @@ class WhatsAppChannel(BaseChannel):
                 self._bridge_proc.kill()
         if self._runner:
             await self._runner.cleanup()
+
+    def _resolve_bridge_dir(self) -> Path:
+        """Resolve bridge directory from configured, repo, or packaged paths."""
+        if self._bridge_dir.exists():
+            return self._bridge_dir
+        if _PACKAGED_BRIDGE_DIR.exists():
+            return _PACKAGED_BRIDGE_DIR
+        raise FileNotFoundError(
+            "WhatsApp bridge directory not found. "
+            "Set channels.whatsapp.bridgeDir or reinstall package."
+        )

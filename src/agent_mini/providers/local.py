@@ -25,6 +25,9 @@ class LocalProvider(BaseProvider):
         self._model = model
         self._client = httpx.AsyncClient(timeout=300)
 
+    async def close(self) -> None:
+        await self._client.aclose()
+
     @property
     def name(self) -> str:
         return "local"

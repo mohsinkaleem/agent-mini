@@ -38,10 +38,6 @@
     }
   },
   "tools": {
-    "webSearch": {
-      "provider": "brave",
-      "apiKey": ""
-    },
     "restrictToWorkspace": false
   },
   "memory": {

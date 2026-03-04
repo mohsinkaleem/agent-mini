@@ -5,8 +5,9 @@
 - ~1,500 lines of Python (core agent)
 - 4 LLM providers: **Ollama**, **Gemini**, **GitHub Copilot**, **Local** (any OpenAI-compatible)
 - 2 chat channels: **Telegram**, **WhatsApp**
-- Built-in tools: shell, files, web search, persistent memory
+- Built-in tools: shell, files, web search & browse, persistent memory
 - Zero-framework: pure `httpx` + `asyncio` — no LangChain, no LiteLLM
+- **Free web search** — DuckDuckGo scraping, no API key required
 
 ## Quick Start
 
@@ -186,11 +187,35 @@ Requires **Node.js ≥ 18**.
 2. Run: `agent-mini gateway`
 3. Scan the QR code that appears in the terminal with WhatsApp → Settings → Linked Devices
 
+### WhatsApp Bridge: Build + Packaging
+
+What it does:
+- `whatsapp-bridge/index.js` is a Node process that connects to WhatsApp Web, receives incoming messages, and forwards them to the Python agent webhook.
+- It also exposes `POST /send` so Python can send replies back to WhatsApp chats.
+
+How it runs by default:
+- No manual JS build is required for normal usage.
+- On first WhatsApp gateway start, Agent Mini runs `npm install` in the bridge directory if `node_modules` is missing.
+- Then it launches the bridge with `node index.js`.
+
+Packaging behavior:
+- Python wheel includes bridge source files (`index.js`, `package.json`, `package-lock.json`).
+- `node_modules` are **not** bundled, so package size stays small.
+
+Optional build step (for maintainers):
+```bash
+cd whatsapp-bridge
+npm install
+npm run build
+```
+- This creates a bundled bridge file at `whatsapp-bridge/dist/index.cjs`.
+- Runtime prefers `dist/index.cjs` when present, otherwise uses `index.js`.
+
 ---
 
 ## Tools
 
-The agent has these built-in tools:
+The agent has these built-in tools (all available out of the box — no API keys needed):
 
 | Tool | Description |
 |------|-------------|
@@ -199,25 +224,21 @@ The agent has these built-in tools:
 | `append_file` | Append content to a file |
 | `write_file` | Create/overwrite files |
 | `list_directory` | Browse the filesystem |
-| `search_files` | Search text/regex across files |
-| `web_search` | Brave Search (requires API key) |
+| `search_files` | Search text/regex across files (uses `rg` or `grep`) |
+| `web_search` | Search the web via DuckDuckGo (free, no API key) |
+| `web_fetch` | Fetch & read any web page as plain text |
 | `memory_store` | Save info to persistent memory |
 | `memory_recall` | Search persistent memory |
 
-### Web Search
+### Web Search & Browsing
 
-Get a free API key at [brave.com/search/api](https://brave.com/search/api/):
+Web search uses **DuckDuckGo HTML scraping** — free with no API key needed. It works out of the box.
 
-```json
-{
-  "tools": {
-    "webSearch": {
-      "provider": "brave",
-      "apiKey": "BSA..."
-    }
-  }
-}
-```
+The agent can:
+1. **Search** — `web_search("Python asyncio tutorial")` returns titles, URLs, and snippets
+2. **Read** — `web_fetch("https://example.com/article")` fetches a page and extracts readable text
+
+This is a lightweight pure-`httpx` approach: no browser process, no Playwright/Selenium, no headless Chrome. HTML is parsed via Python's built-in `html.parser` and converted to clean readable text.
 
 ### Security
 

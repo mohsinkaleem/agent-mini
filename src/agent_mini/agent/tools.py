@@ -1,192 +1,171 @@
-"""Built-in agent tools — shell, files, web search, memory."""
+"""""Built-in agent tools — shell, files, web search/fetch, memory."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import re
+import shutil
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote
 
 import httpx
 
 from .memory import Memory
 
+log = logging.getLogger("agent-mini")
+
 # ======================================================================
 # Tool definitions  (OpenAI function-calling format)
 # ======================================================================
 
-TOOL_DEFS: list[dict] = [
-    {
+
+def _tool(name: str, description: str, params: dict, required: list[str]) -> dict:
+    """Shorthand for building an OpenAI function-calling tool definition."""
+    return {
         "type": "function",
         "function": {
-            "name": "shell_exec",
-            "description": "Execute a shell command and return stdout+stderr.",
+            "name": name,
+            "description": description,
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The shell command to run.",
-                    }
-                },
-                "required": ["command"],
+                "properties": params,
+                "required": required,
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_file",
-            "description": "Read the full contents of a file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Absolute or workspace-relative file path.",
-                    }
-                },
-                "required": ["path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "append_file",
-            "description": "Append content to an existing file (or create it if missing).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path to append to.",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content to append at the end of the file.",
-                    },
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "write_file",
-            "description": "Create or overwrite a file with the given content. Parent directories are created automatically.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path to write.",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content to write into the file.",
-                    },
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_directory",
-            "description": "List files and folders in a directory.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Directory path (defaults to workspace root).",
-                        "default": ".",
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_files",
-            "description": "Search for text/regex in files and return matching lines with file paths and line numbers.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query (regular expression).",
-                    },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory to search in (defaults to workspace root).",
-                        "default": ".",
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Search the web using Brave Search API and return top results.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query.",
-                    }
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_store",
-            "description": "Store important information in persistent memory for later recall. Use this to remember user preferences, facts, or anything worth keeping.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "key": {
-                        "type": "string",
-                        "description": "Short label/category for the memory.",
-                    },
-                    "value": {
-                        "type": "string",
-                        "description": "The information to store.",
-                    },
-                },
-                "required": ["key", "value"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "memory_recall",
-            "description": "Search persistent memory for previously stored information.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Keywords to search for in memory.",
-                    }
-                },
-                "required": ["query"],
-            },
-        },
-    },
+    }
+
+
+def _param(desc: str, default: str | None = None) -> dict:
+    """Shorthand for a string parameter."""
+    p: dict = {"type": "string", "description": desc}
+    if default is not None:
+        p["default"] = default
+    return p
+
+
+_CORE_TOOLS: list[dict] = [
+    _tool("shell_exec", "Execute a shell command and return stdout+stderr.",
+          {"command": _param("The shell command to run.")}, ["command"]),
+    _tool("read_file", "Read the full contents of a file.",
+          {"path": _param("Absolute or workspace-relative file path.")}, ["path"]),
+    _tool("append_file", "Append content to a file (creates it if missing).",
+          {"path": _param("File path."), "content": _param("Content to append.")},
+          ["path", "content"]),
+    _tool("write_file", "Create or overwrite a file. Parent dirs created automatically.",
+          {"path": _param("File path."), "content": _param("File content.")},
+          ["path", "content"]),
+    _tool("list_directory", "List files and folders in a directory.",
+          {"path": _param("Directory path (defaults to workspace root).", ".")}, []),
+    _tool("search_files", "Search for text/regex in files. Returns matching lines with paths and line numbers.",
+          {"query": _param("Search query (regex)."),
+           "path": _param("Directory to search in.", ".")}, ["query"]),
+    _tool("memory_store", "Store important information in persistent memory for later recall.",
+          {"key": _param("Short label/category."),
+           "value": _param("The information to store.")}, ["key", "value"]),
+    _tool("memory_recall", "Search persistent memory for previously stored information.",
+          {"query": _param("Keywords to search for.")}, ["query"]),
 ]
+
+_WEB_TOOLS: list[dict] = [
+    _tool("web_search", "Search the web using DuckDuckGo (free, no API key). Returns top results with titles, URLs, and snippets.",
+          {"query": _param("Search query.")}, ["query"]),
+    _tool("web_fetch", "Fetch a web page and return its content as readable plain text. Use after web_search to read full articles.",
+          {"url": _param("The URL to fetch.")}, ["url"]),
+]
+
+
+# ======================================================================
+# HTML → plain text extractor (zero dependencies)
+# ======================================================================
+
+
+class _HTMLToText(HTMLParser):
+    """Minimal HTML → readable text converter using stdlib only."""
+
+    _SKIP_TAGS = frozenset({"script", "style", "noscript", "svg", "head"})
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        if tag in ("br", "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+                    "li", "tr", "blockquote", "section", "article"):
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS and self._skip_depth > 0:
+            self._skip_depth -= 1
+        if tag in ("p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+                    "li", "tr", "blockquote", "section", "article"):
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        text = "".join(self._parts)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = re.sub(r"[ \t]+", " ", text)
+        return text.strip()
+
+
+def _html_to_text(html: str) -> str:
+    """Extract readable text from HTML."""
+    parser = _HTMLToText()
+    parser.feed(html)
+    return parser.get_text()
+
+
+def _parse_ddg_html(html: str) -> list[dict[str, str]]:
+    """Parse DuckDuckGo HTML search results into structured results."""
+    results: list[dict[str, str]] = []
+
+    # DuckDuckGo HTML results have <a class="result__a"> for titles/URLs
+    # and <a class="result__snippet"> for descriptions.
+    # We use regex for reliability — no extra dependencies.
+    blocks = re.findall(
+        r'<div[^>]*class="[^"]*result[_ ]results_links[^"]*"[^>]*>(.*?)</div>\s*</div>',
+        html, re.DOTALL,
+    )
+    if not blocks:
+        # Fallback: try grabbing <a class="result__a"> directly
+        blocks = re.findall(
+            r'<div[^>]*class="[^"]*links_main[^"]*"[^>]*>(.*?)(?=<div[^>]*class="[^"]*links_main|$)',
+            html, re.DOTALL,
+        )
+
+    for block in blocks:
+        # Extract URL from href in result__a or result-link
+        url_match = re.search(r'href="([^"]+)"', block)
+        title_match = re.search(r'class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL)
+        snippet_match = re.search(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</[at]>', block, re.DOTALL)
+
+        if not url_match:
+            continue
+
+        raw_url = url_match.group(1)
+        # DuckDuckGo wraps URLs in a redirect — extract the real one
+        uddg_match = re.search(r'[?&]uddg=([^&]+)', raw_url)
+        url = unquote(uddg_match.group(1)) if uddg_match else raw_url
+
+        # Skip DuckDuckGo internal links
+        if url.startswith("/") or "duckduckgo.com" in url:
+            continue
+
+        title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else url
+        snippet = re.sub(r'<[^>]+>', '', snippet_match.group(1)).strip() if snippet_match else ""
+
+        results.append({"title": title, "url": url, "snippet": snippet})
+
+    return results[:8]
 
 
 # ======================================================================
@@ -205,18 +184,15 @@ class ToolExecutor:
         ).expanduser()
         self._workspace.mkdir(parents=True, exist_ok=True)
         self._restrict = config.get("tools", {}).get("restrictToWorkspace", False)
-        self._search_key: str = (
-            config.get("tools", {}).get("webSearch", {}).get("apiKey", "")
-        )
+        self._http = httpx.AsyncClient(timeout=30)
 
     def get_tool_defs(self) -> list[dict]:
         """Return definitions for all *available* tools."""
-        defs = [t for t in TOOL_DEFS if t["function"]["name"] != "web_search"]
-        if self._search_key:
-            defs.append(
-                next(t for t in TOOL_DEFS if t["function"]["name"] == "web_search")
-            )
-        return defs
+        return list(_CORE_TOOLS) + list(_WEB_TOOLS)
+
+    async def close(self) -> None:
+        """Clean up HTTP client."""
+        await self._http.aclose()
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -242,6 +218,8 @@ class ToolExecutor:
                     )
                 case "web_search":
                     return await self._web_search(arguments["query"])
+                case "web_fetch":
+                    return await self._web_fetch(arguments["url"])
                 case "memory_store":
                     return self._memory.store(arguments["key"], arguments["value"])
                 case "memory_recall":
@@ -259,11 +237,9 @@ class ToolExecutor:
         p = Path(raw).expanduser()
         if not p.is_absolute():
             p = self._workspace / p
-        if self._restrict:
-            resolved = str(p.resolve())
-            ws_resolved = str(self._workspace.resolve())
-            if not resolved.startswith(ws_resolved):
-                raise PermissionError(f"Access denied: {p} is outside workspace")
+        p = p.resolve()
+        if self._restrict and not p.is_relative_to(self._workspace.resolve()):
+            raise PermissionError(f"Access denied: {p} is outside workspace")
         return p
 
     # ------------------------------------------------------------------
@@ -321,22 +297,22 @@ class ToolExecutor:
 
     async def _search_files(self, query: str, path: str) -> str:
         root = self._resolve_path(path)
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "rg",
-                "--line-number",
-                "--no-heading",
-                "--hidden",
-                "--glob",
-                "!.git",
-                query,
-                str(root),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(self._workspace),
-            )
-        except FileNotFoundError:
-            return "Error: ripgrep (rg) is not installed."
+
+        # Prefer ripgrep, fall back to grep
+        rg = shutil.which("rg")
+        if rg:
+            cmd = [rg, "--line-number", "--no-heading", "--hidden",
+                   "--glob", "!.git", query, str(root)]
+        else:
+            grep = shutil.which("grep") or "grep"
+            cmd = [grep, "-rn", "--include=*", query, str(root)]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(self._workspace),
+        )
         stdout, stderr = await proc.communicate()
 
         if proc.returncode not in (0, 1):
@@ -350,22 +326,58 @@ class ToolExecutor:
             out = out[:100_000] + "\n… (truncated)"
         return out
 
-    async def _web_search(self, query: str) -> str:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                "https://api.search.brave.com/res/v1/web/search",
-                params={"q": query, "count": 5},
-                headers={
-                    "X-Subscription-Token": self._search_key,
-                    "Accept": "application/json",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+    _BROWSER_UA = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
 
-        results: list[str] = []
-        for r in data.get("web", {}).get("results", [])[:5]:
-            results.append(
-                f"**{r['title']}**\n{r['url']}\n{r.get('description', '')}"
-            )
-        return "\n\n".join(results) or "No results found."
+    async def _web_search(self, query: str) -> str:
+        """Search via DuckDuckGo HTML — free, no API key required."""
+        resp = await self._http.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query},
+            headers={
+                "User-Agent": self._BROWSER_UA,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            follow_redirects=True,
+            timeout=15,
+        )
+        resp.raise_for_status()
+
+        results = _parse_ddg_html(resp.text)
+        if not results:
+            return "No results found."
+
+        lines: list[str] = []
+        for r in results:
+            entry = f"**{r['title']}**\n{r['url']}"
+            if r.get("snippet"):
+                entry += f"\n{r['snippet']}"
+            lines.append(entry)
+        return "\n\n".join(lines)
+
+    async def _web_fetch(self, url: str) -> str:
+        """Fetch a URL and return readable text content."""
+        headers = {
+            "User-Agent": self._BROWSER_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        resp = await self._http.get(url, headers=headers, follow_redirects=True, timeout=20)
+        resp.raise_for_status()
+
+        content_type = resp.headers.get("content-type", "")
+        body = resp.text
+
+        # Non-HTML content (JSON, plain text, etc.) — return as-is
+        if "html" not in content_type:
+            if len(body) > 100_000:
+                body = body[:100_000] + "\n… (truncated)"
+            return body
+
+        text = _html_to_text(body)
+        if len(text) > 80_000:
+            text = text[:80_000] + "\n… (truncated)"
+        if not text:
+            return "(page returned no readable text)"
+        return text

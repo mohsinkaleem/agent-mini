@@ -32,6 +32,9 @@ class OllamaProvider(BaseProvider):
         self._think = think
         self._client = httpx.AsyncClient(timeout=300)
 
+    async def close(self) -> None:
+        await self._client.aclose()
+
     @property
     def name(self) -> str:
         return "ollama"

@@ -28,3 +28,8 @@ agent-mini = "agent_mini.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_mini"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"whatsapp-bridge/index.js" = "agent_mini/whatsapp_bridge/index.js"
+"whatsapp-bridge/package.json" = "agent_mini/whatsapp_bridge/package.json"
+"whatsapp-bridge/package-lock.json" = "agent_mini/whatsapp_bridge/package-lock.json"
