@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
+
+log = logging.getLogger("agent-mini")
 
 
 @dataclass
@@ -24,6 +27,7 @@ class ChatResponse:
     content: str | None = None
     tool_calls: list[ToolCall] | None = None
     thinking: str | None = None
+    usage: dict | None = None  # {prompt_tokens, completion_tokens, total_tokens}
 
 
 StreamCallback = Callable[[str], Awaitable[None]]
@@ -39,8 +43,12 @@ def parse_arguments(raw: Any) -> dict:
             return {}
         try:
             parsed = json.loads(raw)
-            return parsed if isinstance(parsed, dict) else {}
+            if isinstance(parsed, dict):
+                return parsed
+            log.warning("Tool arguments parsed as %s instead of dict, dropping", type(parsed).__name__)
+            return {}
         except json.JSONDecodeError:
+            log.warning("Failed to parse tool arguments as JSON: %s", raw[:200])
             return {}
     return {}
 

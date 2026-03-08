@@ -32,3 +32,5 @@ node_modules/
 # Config (contains secrets)
 # ~/.agent-mini/ is outside the repo, but just in case:
 config.json
+.pytest_cache/
+.ruff_cache/

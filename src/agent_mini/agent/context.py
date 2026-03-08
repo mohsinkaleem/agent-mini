@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .memory import Memory
 
-_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_TEMPLATE = """\
 You are **Agent Mini**, a capable personal AI assistant that uses tools to \
 accomplish tasks end-to-end.
 
@@ -17,6 +17,7 @@ Workspace: {workspace}
 ## Tools
 - **shell_exec** — run shell commands (timeout: 120s)
 - **read_file** / **write_file** / **append_file** — file I/O
+- **code_edit** — targeted find-and-replace in a file (safer than write_file for edits)
 - **list_directory** / **search_files** — browse and search the filesystem
 - **web_search** — search the internet via DuckDuckGo (always available, free)
 - **web_fetch** — fetch and read a web page as plain text
@@ -37,8 +38,6 @@ approach, and retry. Try at least twice before giving up.
 with `memory_store`. Check memory with `memory_recall` when context might help.
 7. **Web research.** Use `web_search` to find information, then `web_fetch` to \
 read the most relevant pages for details.
-{custom_prompt}
-{memory_context}\
 """
 
 
@@ -46,19 +45,20 @@ def build_system_prompt(config: dict, memory: Memory) -> str:
     """Render the full system prompt with live context."""
     workspace = Path(config.get("workspace", "~/.agent-mini/workspace")).expanduser()
 
-    custom = config.get("agent", {}).get("systemPrompt", "")
-    if custom:
-        custom = f"\n## User instructions\n{custom}\n"
-
-    recent = memory.get_recent(5)
-    memory_lines = ""
-    if recent:
-        items = "\n".join(f"- {m['key']}: {m['value']}" for m in recent)
-        memory_lines = f"\n## Recent memories\n{items}\n"
-
-    return _SYSTEM_PROMPT.format(
+    # Use safe substitution to avoid format string injection from user config
+    prompt = _SYSTEM_PROMPT_TEMPLATE.format(
         date=datetime.now().strftime("%Y-%m-%d %H:%M"),
         workspace=str(workspace),
-        custom_prompt=custom,
-        memory_context=memory_lines,
-    ).strip()
+    )
+
+    custom = config.get("agent", {}).get("systemPrompt", "")
+    if custom:
+        # Append directly — no .format() call on user-controlled content
+        prompt += f"\n## User instructions\n{custom}\n"
+
+    recent = memory.get_recent(5)
+    if recent:
+        items = "\n".join(f"- {m['key']}: {m['value']}" for m in recent)
+        prompt += f"\n## Recent memories\n{items}\n"
+
+    return prompt.strip()

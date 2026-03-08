@@ -134,10 +134,20 @@ class OllamaProvider(BaseProvider):
     @staticmethod
     def _extract_chat_response(data: dict) -> ChatResponse:
         msg = data.get("message", {})
+        usage = None
+        if data.get("prompt_eval_count") or data.get("eval_count"):
+            usage = {
+                "prompt_tokens": data.get("prompt_eval_count", 0),
+                "completion_tokens": data.get("eval_count", 0),
+                "total_tokens": (
+                    data.get("prompt_eval_count", 0) + data.get("eval_count", 0)
+                ),
+            }
         return ChatResponse(
             content=msg.get("content") or None,
             tool_calls=parse_openai_tool_calls(msg.get("tool_calls")),
             thinking=msg.get("thinking") or None,
+            usage=usage,
         )
 
     @staticmethod

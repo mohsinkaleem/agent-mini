@@ -1,7 +1,7 @@
 """Agent sub-package — core loop, tools, memory, and context."""
 
-from .loop import AgentLoop
+from .loop import AgentLoop, ToolEvent
 from .memory import Memory
 from .tools import ToolExecutor
 
-__all__ = ["AgentLoop", "Memory", "ToolExecutor"]
+__all__ = ["AgentLoop", "Memory", "ToolExecutor", "ToolEvent"]

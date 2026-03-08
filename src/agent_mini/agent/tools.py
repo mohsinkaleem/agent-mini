@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import re
 import shutil
@@ -51,6 +52,16 @@ _CORE_TOOLS: list[dict] = [
         "Execute a shell command and return stdout+stderr.",
         {"command": _param("The shell command to run.")},
         ["command"],
+    ),
+    _tool(
+        "code_edit",
+        "Targeted find-and-replace in a file. Fails if old_text is not found or matches multiple locations. Safer than write_file for modifications.",
+        {
+            "path": _param("File path."),
+            "old_text": _param("The exact text to find in the file (must match exactly once)."),
+            "new_text": _param("The replacement text."),
+        },
+        ["path", "old_text", "new_text"],
     ),
     _tool(
         "read_file",
@@ -256,6 +267,20 @@ def _parse_ddg_html(html: str) -> list[dict[str, str]]:
 class ToolExecutor:
     """Execute agent tools and return results as plain strings."""
 
+    _DEFAULT_BLOCKED_COMMANDS: list[str] = [
+        r"\brm\s+-[^\s]*r[^\s]*f",  # rm -rf variants
+        r"\bsudo\b",
+        r"\bmkfs\b",
+        r"\bdd\s+if=",
+        r":\(\)\s*\{",  # fork bomb
+        r"\b(chmod|chown)\s+(-R\s+)?[0-7]*\s+/[^\s]*$",  # dangerous root chmod/chown
+    ]
+
+    # Tools blocked at each sandbox level
+    _READONLY_BLOCKED_TOOLS = frozenset({
+        "shell_exec", "write_file", "append_file", "code_edit",
+    })
+
     def __init__(self, config: dict, memory: Memory):
         self._config = config
         self._memory = memory
@@ -264,11 +289,54 @@ class ToolExecutor:
         ).expanduser()
         self._workspace.mkdir(parents=True, exist_ok=True)
         self._restrict = config.get("tools", {}).get("restrictToWorkspace", False)
+        self._sandbox_level = config.get("tools", {}).get("sandboxLevel", "workspace")
+        # "workspace" level implies path restriction
+        if self._sandbox_level == "workspace":
+            self._restrict = True
         self._http = httpx.AsyncClient(timeout=30)
+        # Command blocklist — user config extends (not replaces) defaults
+        user_blocked = config.get("tools", {}).get("blockedCommands", [])
+        self._blocked_patterns = [
+            re.compile(p, re.IGNORECASE)
+            for p in self._DEFAULT_BLOCKED_COMMANDS + user_blocked
+        ]
+        # Load plugins
+        self._plugins: dict[str, dict] = {}  # name → {definition, handler}
+        self._load_plugins()
+
+    def _load_plugins(self) -> None:
+        """Discover and load plugins from ~/.agent-mini/plugins/."""
+        plugins_dir = Path.home() / ".agent-mini" / "plugins"
+        if not plugins_dir.is_dir():
+            return
+        for py_file in sorted(plugins_dir.glob("*.py")):
+            try:
+                spec = importlib.util.spec_from_file_location(
+                    f"agent_mini_plugin_{py_file.stem}", py_file
+                )
+                if spec is None or spec.loader is None:
+                    continue
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                # Each plugin must export TOOL_DEF (dict) and handler (async callable)
+                tool_def = getattr(module, "TOOL_DEF", None)
+                handler = getattr(module, "handler", None)
+                if tool_def and handler:
+                    name = tool_def.get("function", {}).get("name", py_file.stem)
+                    self._plugins[name] = {
+                        "definition": tool_def,
+                        "handler": handler,
+                    }
+                    log.info("Loaded plugin: %s from %s", name, py_file)
+            except Exception as e:
+                log.warning("Failed to load plugin %s: %s", py_file, e)
 
     def get_tool_defs(self) -> list[dict]:
-        """Return definitions for all *available* tools."""
-        return list(_CORE_TOOLS) + list(_WEB_TOOLS)
+        """Return definitions for all *available* tools (built-in + plugins)."""
+        defs = list(_CORE_TOOLS) + list(_WEB_TOOLS)
+        for plugin in self._plugins.values():
+            defs.append(plugin["definition"])
+        return defs
 
     async def close(self) -> None:
         """Clean up HTTP client."""
@@ -280,10 +348,22 @@ class ToolExecutor:
 
     async def execute(self, name: str, arguments: dict) -> str:
         """Run tool *name* with *arguments* and return a result string."""
+        # Sandbox level enforcement
+        if self._sandbox_level == "readonly" and name in self._READONLY_BLOCKED_TOOLS:
+            return (
+                f"Error: tool '{name}' is blocked in readonly sandbox mode. "
+                "Only read, search, memory, and web tools are allowed."
+            )
         try:
             match name:
                 case "shell_exec":
                     return await self._shell_exec(arguments["command"])
+                case "code_edit":
+                    return self._code_edit(
+                        arguments["path"],
+                        arguments["old_text"],
+                        arguments["new_text"],
+                    )
                 case "read_file":
                     return self._read_file(arguments["path"])
                 case "append_file":
@@ -305,6 +385,13 @@ class ToolExecutor:
                 case "memory_recall":
                     return self._memory.recall(arguments["query"])
                 case _:
+                    # Check plugins before giving up
+                    if name in self._plugins:
+                        handler = self._plugins[name]["handler"]
+                        result = handler(arguments)
+                        if asyncio.iscoroutine(result):
+                            result = await result
+                        return str(result)
                     return f"Unknown tool: {name}"
         except Exception as e:
             return f"Error: {type(e).__name__}: {e}"
@@ -327,6 +414,22 @@ class ToolExecutor:
     # ------------------------------------------------------------------
 
     async def _shell_exec(self, command: str) -> str:
+        # Check command against blocklist
+        _BLOCKED_RULE_NAMES = {
+            r"\brm\s+-[^\s]*r[^\s]*f": "destructive rm -rf",
+            r"\bsudo\b": "sudo elevation",
+            r"\bmkfs\b": "filesystem format",
+            r"\bdd\s+if=": "raw disk write",
+            r":\(\)\s*\{": "fork bomb",
+            r"\b(chmod|chown)\s+(-R\s+)?[0-7]*\s+/[^\s]*$": "root permission change",
+        }
+        for pattern in self._blocked_patterns:
+            if pattern.search(command):
+                rule_name = _BLOCKED_RULE_NAMES.get(pattern.pattern, "custom rule")
+                return (
+                    f"Error: command blocked by security policy ({rule_name}). "
+                    f"If this is intentional, adjust tools.blockedCommands in config."
+                )
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
@@ -366,12 +469,26 @@ class ToolExecutor:
             f.write(content)
         return f"Appended {len(content)} bytes → {p}"
 
+    def _code_edit(self, path: str, old_text: str, new_text: str) -> str:
+        p = self._resolve_path(path)
+        if not p.exists():
+            return f"Error: file not found: {p}"
+        content = p.read_text(errors="replace")
+        count = content.count(old_text)
+        if count == 0:
+            return "Error: old_text not found in file. Check for exact match including whitespace."
+        if count > 1:
+            return f"Error: old_text matches {count} locations. Make it more specific to match exactly once."
+        new_content = content.replace(old_text, new_text, 1)
+        p.write_text(new_content)
+        return f"Edited {p} — replaced 1 occurrence ({len(old_text)} → {len(new_text)} chars)"
+
     def _list_directory(self, path: str) -> str:
         p = self._resolve_path(path)
         entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name))
         lines: list[str] = []
         for e in entries[:200]:
-            prefix = "📁 " if e.is_dir() else "📄 "
+            prefix = "[dir]  " if e.is_dir() else "[file] "
             lines.append(f"{prefix}{e.name}")
         return "\n".join(lines) or "(empty directory)"
 
@@ -456,7 +573,7 @@ class ToolExecutor:
         )
         resp.raise_for_status()
 
-        content_type = resp.headers.get("content-type", "")
+        content_type = resp.headers.get("content-type", "").lower()
         body = resp.text
 
         # Non-HTML content (JSON, plain text, etc.) — return as-is
