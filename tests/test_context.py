@@ -15,12 +15,13 @@ def test_build_system_prompt_includes_workspace(tmp_path: Path):
     assert "Agent Mini" in prompt
 
 
-def test_build_system_prompt_includes_code_edit(tmp_path: Path):
+def test_build_system_prompt_includes_rules(tmp_path: Path):
     mem = Memory(tmp_path / "mem.json")
     config = {"workspace": str(tmp_path)}
 
     prompt = build_system_prompt(config, mem)
-    assert "code_edit" in prompt
+    assert "<rules>" in prompt
+    assert "read a file before editing" in prompt
 
 
 def test_build_system_prompt_includes_custom_prompt(tmp_path: Path):

@@ -49,66 +49,66 @@ def _param(desc: str, default: str | None = None) -> dict:
 _CORE_TOOLS: list[dict] = [
     _tool(
         "shell_exec",
-        "Execute a shell command and return stdout+stderr.",
-        {"command": _param("The shell command to run.")},
+        "Run a shell command. Returns stdout+stderr.",
+        {"command": _param("Shell command.")},
         ["command"],
     ),
     _tool(
         "code_edit",
-        "Targeted find-and-replace in a file. Fails if old_text is not found or matches multiple locations. Safer than write_file for modifications.",
+        "Find-and-replace in a file. old_text must match exactly once.",
         {
             "path": _param("File path."),
-            "old_text": _param("The exact text to find in the file (must match exactly once)."),
-            "new_text": _param("The replacement text."),
+            "old_text": _param("Exact text to find (must match once)."),
+            "new_text": _param("Replacement text."),
         },
         ["path", "old_text", "new_text"],
     ),
     _tool(
         "read_file",
-        "Read the full contents of a file.",
-        {"path": _param("Absolute or workspace-relative file path.")},
+        "Read a file. Returns text content.",
+        {"path": _param("File path.")},
         ["path"],
     ),
     _tool(
         "append_file",
-        "Append content to a file (creates it if missing).",
-        {"path": _param("File path."), "content": _param("Content to append.")},
+        "Append text to a file. Creates it if missing.",
+        {"path": _param("File path."), "content": _param("Text to append.")},
         ["path", "content"],
     ),
     _tool(
         "write_file",
-        "Create or overwrite a file. Parent dirs created automatically.",
+        "Create or overwrite a file.",
         {"path": _param("File path."), "content": _param("File content.")},
         ["path", "content"],
     ),
     _tool(
         "list_directory",
         "List files and folders in a directory.",
-        {"path": _param("Directory path (defaults to workspace root).", ".")},
+        {"path": _param("Directory path.", ".")},
         [],
     ),
     _tool(
         "search_files",
-        "Search for text/regex in files. Returns matching lines with paths and line numbers.",
+        "Grep for text/regex in files. Returns matching lines.",
         {
-            "query": _param("Search query (regex)."),
-            "path": _param("Directory to search in.", "."),
+            "query": _param("Regex pattern."),
+            "path": _param("Directory to search.", "."),
         },
         ["query"],
     ),
     _tool(
         "memory_store",
-        "Store important information in persistent memory for later recall.",
+        "Save a fact to persistent memory.",
         {
-            "key": _param("Short label/category."),
-            "value": _param("The information to store."),
+            "key": _param("Short label."),
+            "value": _param("Information to store."),
         },
         ["key", "value"],
     ),
     _tool(
         "memory_recall",
-        "Search persistent memory for previously stored information.",
-        {"query": _param("Keywords to search for.")},
+        "Search persistent memory.",
+        {"query": _param("Search keywords.")},
         ["query"],
     ),
 ]
@@ -116,14 +116,14 @@ _CORE_TOOLS: list[dict] = [
 _WEB_TOOLS: list[dict] = [
     _tool(
         "web_search",
-        "Search the web using DuckDuckGo (free, no API key). Returns top results with titles, URLs, and snippets.",
+        "Search the web via DuckDuckGo. Returns titles, URLs, snippets.",
         {"query": _param("Search query.")},
         ["query"],
     ),
     _tool(
         "web_fetch",
-        "Fetch a web page and return its content as readable plain text. Use after web_search to read full articles.",
-        {"url": _param("The URL to fetch.")},
+        "Fetch a URL as plain text.",
+        {"url": _param("URL to fetch.")},
         ["url"],
     ),
 ]
@@ -267,14 +267,14 @@ def _parse_ddg_html(html: str) -> list[dict[str, str]]:
 class ToolExecutor:
     """Execute agent tools and return results as plain strings."""
 
-    _DEFAULT_BLOCKED_COMMANDS: list[str] = [
-        r"\brm\s+-[^\s]*r[^\s]*f",  # rm -rf variants
-        r"\bsudo\b",
-        r"\bmkfs\b",
-        r"\bdd\s+if=",
-        r":\(\)\s*\{",  # fork bomb
-        r"\b(chmod|chown)\s+(-R\s+)?[0-7]*\s+/[^\s]*$",  # dangerous root chmod/chown
-    ]
+    _DEFAULT_BLOCKED_COMMANDS: dict[str, str] = {
+        r"\brm\s+-[^\s]*r[^\s]*f": "destructive rm -rf",
+        r"\bsudo\b": "sudo elevation",
+        r"\bmkfs\b": "filesystem format",
+        r"\bdd\s+if=": "raw disk write",
+        r":\(\)\s*\{": "fork bomb",
+        r"\b(chmod|chown)\s+(-R\s+)?[0-7]*\s+/[^\s]*$": "root permission change",
+    }
 
     # Tools blocked at each sandbox level
     _READONLY_BLOCKED_TOOLS = frozenset({
@@ -296,9 +296,9 @@ class ToolExecutor:
         self._http = httpx.AsyncClient(timeout=30)
         # Command blocklist — user config extends (not replaces) defaults
         user_blocked = config.get("tools", {}).get("blockedCommands", [])
+        all_patterns = list(self._DEFAULT_BLOCKED_COMMANDS.keys()) + user_blocked
         self._blocked_patterns = [
-            re.compile(p, re.IGNORECASE)
-            for p in self._DEFAULT_BLOCKED_COMMANDS + user_blocked
+            re.compile(p, re.IGNORECASE) for p in all_patterns
         ]
         # Load plugins
         self._plugins: dict[str, dict] = {}  # name → {definition, handler}
@@ -415,17 +415,9 @@ class ToolExecutor:
 
     async def _shell_exec(self, command: str) -> str:
         # Check command against blocklist
-        _BLOCKED_RULE_NAMES = {
-            r"\brm\s+-[^\s]*r[^\s]*f": "destructive rm -rf",
-            r"\bsudo\b": "sudo elevation",
-            r"\bmkfs\b": "filesystem format",
-            r"\bdd\s+if=": "raw disk write",
-            r":\(\)\s*\{": "fork bomb",
-            r"\b(chmod|chown)\s+(-R\s+)?[0-7]*\s+/[^\s]*$": "root permission change",
-        }
         for pattern in self._blocked_patterns:
             if pattern.search(command):
-                rule_name = _BLOCKED_RULE_NAMES.get(pattern.pattern, "custom rule")
+                rule_name = self._DEFAULT_BLOCKED_COMMANDS.get(pattern.pattern, "custom rule")
                 return (
                     f"Error: command blocked by security policy ({rule_name}). "
                     f"If this is intentional, adjust tools.blockedCommands in config."

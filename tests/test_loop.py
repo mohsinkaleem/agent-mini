@@ -1,6 +1,5 @@
 """Tests for AgentLoop — parallel execution, self-reflection, retry."""
 
-import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -47,6 +46,7 @@ def _make_agent(config, memory, responses):
     provider.chat = AsyncMock(side_effect=responses)
     provider.chat_stream = AsyncMock(side_effect=responses)
     provider.close = AsyncMock()
+    provider.model_name = "qwen2.5:7b"  # default to small tier for tests
     return AgentLoop(provider, config, memory)
 
 
@@ -131,7 +131,7 @@ async def test_self_reflection_on_error(config, memory):
     ]
     agent = _make_agent(config, memory, responses)
     conversation = []
-    result = await agent.run("read it", conversation)
+    await agent.run("read it", conversation)
 
     # Check reflection was added to tool result
     second_call_messages = agent.provider.chat.call_args_list[1][0][0]
@@ -175,6 +175,7 @@ async def test_retry_on_transient_error(config, memory):
         ]
     )
     provider.close = AsyncMock()
+    provider.model_name = "qwen2.5:7b"
 
     agent = AgentLoop(provider, config, memory)
     conversation = []
@@ -195,6 +196,7 @@ async def test_summarize_history_failure_preserves_data(config, memory):
     # Summarization call always fails
     provider.chat = AsyncMock(side_effect=Exception("Summarization failed!"))
     provider.close = AsyncMock()
+    provider.model_name = "qwen2.5:7b"
 
     agent = AgentLoop(provider, config, memory)
 
@@ -209,4 +211,93 @@ async def test_summarize_history_failure_preserves_data(config, memory):
 
     # Conversation should be preserved since summarization failed
     assert len(conversation) == original_len
+    await agent.close()
+
+
+# ── Token-aware compaction ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_token_aware_compaction_triggers(config, memory):
+    """Compaction should trigger based on token budget, not message count."""
+    # Use a small-tier model (effective context = 6000 tokens)
+    # Build a conversation small enough by message count (<50) but big by tokens
+    responses = [FakeResponse(content="done")]
+    agent = _make_agent(config, memory, responses)
+
+    # Each message ~500 chars = ~125 tokens. Need >4500 tokens (75% of 6000)
+    # That's ~36 messages of 500 chars each → well under old 50-message limit
+    conversation = []
+    for i in range(20):
+        conversation.append({"role": "user", "content": f"question {i} " + "x" * 480})
+        conversation.append({"role": "assistant", "content": f"answer {i} " + "y" * 480})
+
+    # The summarize call needs to succeed
+    agent.provider.chat = AsyncMock(
+        side_effect=[
+            FakeResponse(content="Summary of conversation."),  # summarization
+        ]
+    )
+    # Manually trigger what run() does after persisting
+    from agent_mini.agent.token_estimator import estimate_messages_tokens
+    current_tokens = estimate_messages_tokens(conversation)
+    assert current_tokens > int(6000 * 0.75), "Conversation should exceed budget"
+    assert len(conversation) < 50, "Should be under old message-count trigger"
+
+    await agent._summarize_history(conversation)
+    # After summarization, conversation should be shorter
+    assert len(conversation) < 40
+    await agent.close()
+
+
+# ── Pruning ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_prune_tool_results(config, memory):
+    """Old tool results should be trimmed, recent ones preserved."""
+    agent = _make_agent(config, memory, [])
+
+    messages = [{"role": "system", "content": "sys"}]
+    # Add many assistant + tool rounds
+    for i in range(10):
+        messages.append({"role": "assistant", "content": f"thinking {i}", "tool_calls": []})
+        messages.append({
+            "role": "tool",
+            "tool_call_id": f"tc{i}",
+            "name": "read_file",
+            "content": f"{'X' * 6000}",  # big tool result
+        })
+    messages.append({"role": "user", "content": "now what?"})
+
+    pruned = agent._prune_tool_results(messages)
+    # Recent tool results (near the end) should be preserved or soft-trimmed
+    # Very old ones should be placeholders
+    old_tool = next(m for m in pruned if m.get("tool_call_id") == "tc0")
+    assert len(old_tool["content"]) < 6000  # should be trimmed or replaced
+    await agent.close()
+
+
+# ── Max iterations by tier ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_max_iterations_uses_tier_default(tmp_path, memory):
+    """When maxIterations is not set, tier default should be used."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    config = {
+        "workspace": str(ws),
+        "tools": {"restrictToWorkspace": False},
+        "agent": {},  # No maxIterations set
+    }
+    agent = _make_agent(config, memory, [])
+    # qwen2.5:7b → small tier → 15 iterations
+    assert agent.max_iterations == 15
+    await agent.close()
+
+
+@pytest.mark.asyncio
+async def test_max_iterations_respects_user_config(config, memory):
+    """Explicit maxIterations in config should override tier default."""
+    config["agent"]["maxIterations"] = 42
+    agent = _make_agent(config, memory, [])
+    assert agent.max_iterations == 42
     await agent.close()

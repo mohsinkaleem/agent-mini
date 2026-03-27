@@ -33,6 +33,28 @@ class ChatResponse:
 StreamCallback = Callable[[str], Awaitable[None]]
 
 
+def _repair_json(s: str) -> dict | None:
+    """Attempt common JSON repairs for malformed small-model outputs."""
+    import re as _re
+    # Strip markdown code fences
+    s = _re.sub(r"^```(?:json)?\s*", "", s)
+    s = _re.sub(r"\s*```$", "", s)
+    s = s.strip()
+    # Fix trailing commas
+    s = _re.sub(r",\s*}", "}", s)
+    s = _re.sub(r",\s*]", "]", s)
+    # Fix single quotes → double quotes (simple heuristic)
+    if "'" in s and '"' not in s:
+        s = s.replace("'", '"')
+    # Fix unquoted keys: word: -> "word":
+    s = _re.sub(r"(?<=[{,\s])(\w+)\s*:", r'"\1":', s)
+    try:
+        parsed = json.loads(s)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
 def parse_arguments(raw: Any) -> dict:
     """Normalize tool/function arguments into a dict."""
     if isinstance(raw, dict):
@@ -48,6 +70,11 @@ def parse_arguments(raw: Any) -> dict:
             log.warning("Tool arguments parsed as %s instead of dict, dropping", type(parsed).__name__)
             return {}
         except json.JSONDecodeError:
+            # Attempt repair before giving up
+            repaired = _repair_json(raw)
+            if repaired is not None:
+                log.info("Repaired malformed tool arguments JSON")
+                return repaired
             log.warning("Failed to parse tool arguments as JSON: %s", raw[:200])
             return {}
     return {}

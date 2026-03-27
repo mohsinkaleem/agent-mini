@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -14,6 +15,13 @@ import httpx
 from ..providers.base import BaseProvider
 from .context import build_system_prompt
 from .memory import Memory
+from .token_estimator import (
+    classify_model_tier,
+    estimate_messages_tokens,
+    get_effective_context,
+    get_output_limit,
+    get_tier_max_iterations,
+)
 from .tools import ToolExecutor
 from .vision import build_image_content_parts
 
@@ -55,11 +63,22 @@ class AgentLoop:
         self.config = config
         self.memory = memory
         self.tools = ToolExecutor(config, memory)
-        self.max_iterations: int = config.get("agent", {}).get("maxIterations", 30)
+        self._model_name: str = provider.model_name
+        self._model_tier: str = classify_model_tier(self._model_name)
+        self._effective_ctx: int = get_effective_context(self._model_name)
+        self._output_limit: int = get_output_limit(self._model_name)
+        # Max iterations: respect explicit user config, otherwise use tier default
+        user_iters = config.get("agent", {}).get("maxIterations")
+        self.max_iterations: int = (
+            user_iters if user_iters is not None
+            else get_tier_max_iterations(self._model_name)
+        )
         self.temperature: float = config.get("agent", {}).get("temperature", 0.7)
         # Token/cost tracking per session
         self.session_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.turn_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        # Loop detection state
+        self._recent_calls: list[str] = []
 
     async def close(self) -> None:
         """Clean up provider and tool resources."""
@@ -99,8 +118,11 @@ class AgentLoop:
         for iteration in range(self.max_iterations):
             log.debug("iteration %d / %d", iteration + 1, self.max_iterations)
 
+            # Prune old tool results in-memory before sending to provider
+            pruned = self._prune_tool_results(messages)
+
             response = await self._call_provider_with_retry(
-                messages, tool_defs, on_stream
+                pruned, tool_defs, on_stream
             )
             if isinstance(response, str):
                 # Error string from retry exhaustion
@@ -119,8 +141,10 @@ class AgentLoop:
                 # Persist to conversation history
                 conversation.append({"role": "user", "content": user_message})
                 conversation.append({"role": "assistant", "content": final})
-                # Summarize history if too long
-                if len(conversation) > 50:
+                # Token-aware compaction: summarize when conversation
+                # exceeds 75% of the model's effective context budget.
+                current_tokens = estimate_messages_tokens(conversation)
+                if current_tokens > int(self._effective_ctx * 0.75):
                     await self._summarize_history(conversation)
                 return final
 
@@ -171,6 +195,15 @@ class AgentLoop:
             )
 
             for tc, result in results:
+                # Compress tool output based on model tier
+                if len(result) > self._output_limit:
+                    head = self._output_limit * 2 // 3
+                    tail = self._output_limit // 3
+                    result = (
+                        result[:head]
+                        + f"\n\n[... truncated {len(result) - head - tail} chars ...]\n\n"
+                        + result[-tail:]
+                    )
                 # Self-reflection on errors: nudge the LLM to reason about failures
                 if result.startswith("Error:"):
                     result = (
@@ -187,22 +220,82 @@ class AgentLoop:
                     }
                 )
 
+            # Loop detection: identical consecutive tool calls → nudge
+            for tc, _result in results:
+                sig = hashlib.md5(
+                    json.dumps({"n": tc.name, "a": tc.arguments}, sort_keys=True).encode()
+                ).hexdigest()
+                self._recent_calls.append(sig)
+            # Keep a sliding window of last few signatures
+            self._recent_calls = self._recent_calls[-6:]
+            if len(self._recent_calls) >= 4:
+                last4 = self._recent_calls[-4:]
+                if last4[0] == last4[1] == last4[2] == last4[3]:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You have repeated the same tool call multiple times "
+                            "with the same result. Try a completely different approach."
+                        ),
+                    })
+
         return "Reached maximum iterations. Please try a simpler request."
+
+    def _prune_tool_results(self, messages: list[dict]) -> list[dict]:
+        """Return a copy of *messages* with old tool results trimmed.
+
+        Protects the last 3 assistant turns and their tool results.
+        Older tool messages get soft-trimmed (head+tail) or replaced
+        with a placeholder.  The original list is never mutated.
+        """
+        # Find positions of the last 3 assistant messages
+        asst_indices = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
+        cutoff = asst_indices[-3] if len(asst_indices) >= 3 else 0
+
+        pruned: list[dict] = []
+        for i, msg in enumerate(messages):
+            if i >= cutoff or msg.get("role") != "tool":
+                pruned.append(msg)
+                continue
+            content = msg.get("content", "")
+            if len(content) <= 4000:
+                pruned.append(msg)
+            elif i >= cutoff - 6:
+                # Soft-trim: keep head + tail
+                trimmed = content[:1500] + "\n...\n" + content[-1500:]
+                pruned.append({**msg, "content": trimmed})
+            else:
+                # Hard-clear: replace with placeholder
+                pruned.append({**msg, "content": "[Old tool result cleared to save context]"})
+        return pruned
 
     async def _summarize_history(self, conversation: list[dict]) -> None:
         """Summarize oldest messages in-place to keep context bounded."""
-        # Take the oldest 20 messages, keep the rest
-        to_summarize = conversation[:20]
-        keep = conversation[20:]
+        # Determine how many messages to summarize: enough to drop below
+        # 50% of effective context, but at least 6 messages.
+        target = int(self._effective_ctx * 0.5)
+        tokens_so_far = 0
+        cut = 0
+        for i, msg in enumerate(conversation):
+            content = msg.get("content", "")
+            tokens_so_far += len(content) // 4 + 4 if isinstance(content, str) else 50
+            if tokens_so_far > (estimate_messages_tokens(conversation) - target):
+                cut = max(i, 6)
+                break
+        if cut < 6:
+            cut = min(20, len(conversation) - 4)  # fallback: oldest 20, keep last 4
 
-        # Build a summarization request
+        to_summarize = conversation[:cut]
+        keep = conversation[cut:]
+
+        # Build a tight summarization request
         summary_messages = [
             {
                 "role": "system",
                 "content": (
-                    "Summarize the following conversation segment concisely. "
-                    "Preserve key decisions, file paths, code changes, technical "
-                    "context, and any user preferences. Be factual and brief."
+                    "Summarize in under 200 words. Keep file paths, error "
+                    "messages, code snippets, and key decisions verbatim. "
+                    "State what was done and what remains."
                 ),
             },
             {
@@ -222,10 +315,8 @@ class AgentLoop:
             summary_text = response.content or "Previous conversation context."
         except Exception as e:
             log.warning("Failed to summarize history: %s", e)
-            # On failure, keep conversation intact rather than losing data
             return
 
-        # Atomic replacement: build new list first, then swap
         new_conversation = [
             {
                 "role": "system",

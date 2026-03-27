@@ -7,7 +7,6 @@ import mimetypes
 import re
 from pathlib import Path
 
-
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _URL_PATTERN = re.compile(r"https?://\S+\.(?:png|jpe?g|gif|webp|bmp)", re.IGNORECASE)
 
@@ -41,7 +40,6 @@ def build_image_content_parts(text: str) -> list[dict] | None:
     - Image URLs: https://example.com/image.jpg
     """
     parts: list[dict] = []
-    remaining_text = text
 
     # Extract image file paths (words ending with image extensions)
     words = text.split()

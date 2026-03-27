@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from agent_mini.config import load_config, get_workspace
+from agent_mini.config import get_workspace, load_config
 
 
 def test_load_config_missing_file(monkeypatch):

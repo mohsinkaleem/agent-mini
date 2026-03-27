@@ -56,8 +56,10 @@ class TelegramChannel(BaseChannel):
         from telegram.ext import (
             Application,
             CommandHandler,
-            MessageHandler as TGMsgHandler,
             filters,
+        )
+        from telegram.ext import (
+            MessageHandler as TGMsgHandler,
         )
 
         self._handler = on_message

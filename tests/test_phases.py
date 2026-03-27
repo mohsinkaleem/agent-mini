@@ -1,6 +1,5 @@
 """Tests for Phase 2–4 features: sessions, sandbox, fuzzy memory, plugins, vision, config."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -9,13 +8,12 @@ from agent_mini.agent.memory import Memory
 from agent_mini.agent.tools import ToolExecutor
 from agent_mini.config import AppConfig
 from agent_mini.sessions import (
-    generate_session_id,
-    save_session,
-    load_session,
-    list_sessions,
     delete_session,
+    generate_session_id,
+    list_sessions,
+    load_session,
+    save_session,
 )
-
 
 # ------------------------------------------------------------------
 # Fuzzy memory matching (Phase 3.2)

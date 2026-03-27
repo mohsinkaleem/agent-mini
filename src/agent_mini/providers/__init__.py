@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from .base import BaseProvider, ChatResponse, ToolCall
-from .ollama import OllamaProvider
 from .gemini import GeminiProvider
 from .github_copilot import GitHubCopilotProvider
 from .local import LocalProvider
+from .ollama import OllamaProvider
 
 
 def create_provider(config: dict) -> BaseProvider:

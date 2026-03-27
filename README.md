@@ -1,12 +1,18 @@
 # Agent Mini
 
+[![CI](https://github.com/mohsinkaleem/agent-mini/actions/workflows/ci.yml/badge.svg)](https://github.com/mohsinkaleem/agent-mini/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/agent-mini)](https://pypi.org/project/agent-mini/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 **Ultra-lightweight personal AI agent** — inspired by [nanobot](https://github.com/HKUDS/nanobot), built lean.
 
-- ~2,000 lines of Python (core agent)
+- ~3,500 lines of Python (core agent)
 - 4 LLM providers: **Ollama**, **Gemini**, **GitHub Copilot**, **Local** (any OpenAI-compatible)
 - 1 chat channel: **Telegram**
 - Built-in tools: shell, files, web search & browse, persistent memory
 - Zero-framework: pure `httpx` + `asyncio` — no LangChain, no LiteLLM
+- **Optimized for small models** — token-aware context, tool call repair, model-tier tuning
 - **Free web search** — DuckDuckGo scraping, no API key required
 - **Streaming** — real-time token output from all providers
 - **Session persistence** — resume conversations across restarts
@@ -19,16 +25,15 @@
 ### 1. Install
 
 ```bash
-git clone https://github.com/your-repo/agent-mini.git
+# From PyPI
+pip install agent-mini
+
+# Or with Telegram support
+pip install agent-mini[all]
+
+# Or from source (for development)
+git clone https://github.com/mohsinkaleem/agent-mini.git
 cd agent-mini
-
-# Option A: Install and link for development (changes in src/ take effect immediately)
-uv tool install --editable ".[all]"
-
-# Option B: Standard global install (copies files, no linking)
-uv tool install ".[all]"
-
-# Or for local development only:
 uv sync --extra all
 ```
 
@@ -408,9 +413,14 @@ uv sync --extra dev
 # Run tests
 uv run pytest tests/ -v
 
+# Lint
+uv run ruff check src/ tests/
+
 # Run a single test file
-uv run pytest tests/test_phases.py -v
+uv run pytest tests/test_loop.py -v
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on submitting PRs.
 
 This is a lightweight pure-`httpx` approach: no browser process, no Playwright/Selenium, no headless Chrome. HTML is parsed via Python's built-in `html.parser` and converted to clean readable text.
 
@@ -449,20 +459,24 @@ agent-mini/
 │   ├── cli.py              # CLI commands
 │   ├── config.py           # Config loading
 │   ├── bus.py              # Message routing
+│   ├── sessions.py         # Session persistence
 │   ├── agent/
 │   │   ├── loop.py         # Core ReAct agent loop
 │   │   ├── context.py      # System prompt builder
-│   │   ├── memory.py       # Persistent JSON memory
-│   │   └── tools.py        # Built-in tools
+│   │   ├── memory.py       # Persistent JSON memory + TF-IDF search
+│   │   ├── tools.py        # Built-in tools + plugin loader
+│   │   ├── token_estimator.py  # Token counting + model tier classification
+│   │   └── vision.py       # Image detection + encoding
 │   ├── providers/
-│   │   ├── base.py         # Provider interface
+│   │   ├── base.py         # Provider interface + tool call repair
 │   │   ├── ollama.py       # Ollama
 │   │   ├── gemini.py       # Google Gemini
 │   │   ├── github_copilot.py  # GitHub Copilot
 │   │   └── local.py        # OpenAI-compatible
 │   └── channels/
 │       ├── base.py         # Channel interface
-│       ├── telegram.py     # Telegram bot
+│       └── telegram.py     # Telegram bot
+├── tests/
 ├── pyproject.toml
 └── config.example.json
 ```

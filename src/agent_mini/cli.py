@@ -15,8 +15,6 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.rule import Rule
-from rich.live import Live
 
 from . import __version__
 from .config import (
@@ -28,10 +26,10 @@ from .config import (
     save_config,
 )
 from .sessions import (
-    save_session,
-    load_session,
-    list_sessions,
     generate_session_id,
+    list_sessions,
+    load_session,
+    save_session,
 )
 
 console = Console()
@@ -138,8 +136,8 @@ def chat(message: str | None, verbose: bool, no_markdown: bool, session: str | N
 
 
 async def _chat(config: dict, message: str | None, plain: bool, session_id: str | None) -> None:
-    from .providers import create_provider
     from .agent import AgentLoop, Memory, ToolEvent
+    from .providers import create_provider
 
     provider = create_provider(config)
     memory = Memory(
@@ -343,7 +341,12 @@ async def _handle_slash_command(
                 for entry in recent:
                     ts = entry.get("timestamp", "?")[:16]
                     mem_table.add_row(ts, entry["key"], entry["value"])
-                console.print(Panel(mem_table, title="[bold]Recent Memories[/bold]", border_style="dim", padding=(1, 1)))
+                console.print(Panel(
+                    mem_table,
+                    title="[bold]Recent Memories[/bold]",
+                    border_style="dim",
+                    padding=(1, 1),
+                ))
         return True
 
     if cmd == "/status":
@@ -434,7 +437,7 @@ async def _handle_slash_command(
 
 def _export_conversation(conversation: list[dict], filename: str) -> None:
     """Export conversation history as Markdown."""
-    lines = [f"# Agent Mini Conversation\n", f"*Exported {datetime.now().isoformat()}*\n\n"]
+    lines = ["# Agent Mini Conversation\n", f"*Exported {datetime.now().isoformat()}*\n\n"]
 
     for msg in conversation:
         role = msg["role"]
@@ -492,10 +495,10 @@ def gateway(verbose: bool):
 
 
 async def _gateway(config: dict) -> None:
-    from .providers import create_provider
     from .agent import AgentLoop, Memory
     from .bus import MessageBus
     from .channels import TelegramChannel
+    from .providers import create_provider
 
     provider = create_provider(config)
     memory = Memory(

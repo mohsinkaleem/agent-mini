@@ -1,11 +1,9 @@
 """Tests for ToolExecutor — file ops, code_edit, shell blocklist, path resolution."""
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-import pytest_asyncio
 
 from agent_mini.agent.memory import Memory
 from agent_mini.agent.tools import ToolExecutor
@@ -232,8 +230,6 @@ async def test_list_directory_uses_text_prefixes(executor: ToolExecutor, workspa
 async def test_web_search_returns_results(executor: ToolExecutor):
     """web_search should handle empty results gracefully."""
     # We can't test actual DDG, but we test the tool doesn't crash
-    import httpx
-    from unittest.mock import AsyncMock, patch
 
     mock_response = AsyncMock()
     mock_response.text = "<html><body>No results</body></html>"

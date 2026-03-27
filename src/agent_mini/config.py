@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".agent-mini"
@@ -98,21 +98,29 @@ class AppConfig:
     @classmethod
     def from_dict(cls, data: dict) -> AppConfig:
         """Create an AppConfig from a raw dict, handling missing keys gracefully."""
+
+        def _pick(raw: dict, dc: type) -> dict:
+            return {k: v for k, v in raw.items() if k in dc.__dataclass_fields__}
+
         providers_raw = data.get("providers", {})
         return cls(
             provider=data.get("provider", "ollama"),
             providers=ProvidersConfig(
-                ollama=OllamaConfig(**{k: v for k, v in providers_raw.get("ollama", {}).items() if k in OllamaConfig.__dataclass_fields__}),
-                gemini=GeminiConfig(**{k: v for k, v in providers_raw.get("gemini", {}).items() if k in GeminiConfig.__dataclass_fields__}),
-                github_copilot=GitHubCopilotConfig(**{k: v for k, v in providers_raw.get("github_copilot", {}).items() if k in GitHubCopilotConfig.__dataclass_fields__}),
-                local=LocalConfig(**{k: v for k, v in providers_raw.get("local", {}).items() if k in LocalConfig.__dataclass_fields__}),
+                ollama=OllamaConfig(**_pick(providers_raw.get("ollama", {}), OllamaConfig)),
+                gemini=GeminiConfig(**_pick(providers_raw.get("gemini", {}), GeminiConfig)),
+                github_copilot=GitHubCopilotConfig(
+                    **_pick(providers_raw.get("github_copilot", {}), GitHubCopilotConfig)
+                ),
+                local=LocalConfig(**_pick(providers_raw.get("local", {}), LocalConfig)),
             ),
-            agent=AgentConfig(**{k: v for k, v in data.get("agent", {}).items() if k in AgentConfig.__dataclass_fields__}),
+            agent=AgentConfig(**_pick(data.get("agent", {}), AgentConfig)),
             channels=ChannelsConfig(
-                telegram=TelegramConfig(**{k: v for k, v in data.get("channels", {}).get("telegram", {}).items() if k in TelegramConfig.__dataclass_fields__}),
+                telegram=TelegramConfig(
+                    **_pick(data.get("channels", {}).get("telegram", {}), TelegramConfig)
+                ),
             ),
-            tools=ToolsConfig(**{k: v for k, v in data.get("tools", {}).items() if k in ToolsConfig.__dataclass_fields__}),
-            memory=MemoryConfig(**{k: v for k, v in data.get("memory", {}).items() if k in MemoryConfig.__dataclass_fields__}),
+            tools=ToolsConfig(**_pick(data.get("tools", {}), ToolsConfig)),
+            memory=MemoryConfig(**_pick(data.get("memory", {}), MemoryConfig)),
             workspace=data.get("workspace", str(DEFAULT_WORKSPACE)),
         )
 
