@@ -34,3 +34,5 @@ node_modules/
 config.json
 .pytest_cache/
 .ruff_cache/
+
+archived

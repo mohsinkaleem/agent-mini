@@ -78,6 +78,8 @@ def init():
                     "think": False,
                 },
                 "gemini": {"apiKey": "", "model": "gemini-2.0-flash"},
+                "openai": {"apiKey": "", "model": "gpt-4o"},
+                "claude": {"apiKey": "", "model": "claude-sonnet-4-20250514"},
                 "github_copilot": {"token": "", "model": "gpt-4o"},
                 "local": {
                     "baseUrl": "http://localhost:8080/v1",

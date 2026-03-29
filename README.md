@@ -8,7 +8,7 @@
 **Ultra-lightweight personal AI agent** — inspired by [nanobot](https://github.com/HKUDS/nanobot), built lean.
 
 - ~3,500 lines of Python (core agent)
-- 4 LLM providers: **Ollama**, **Gemini**, **GitHub Copilot**, **Local** (any OpenAI-compatible)
+- 6 LLM providers: **Ollama**, **Gemini**, **OpenAI**, **Claude**, **GitHub Copilot**, **Local** (any OpenAI-compatible)
 - 1 chat channel: **Telegram**
 - Built-in tools: shell, files, web search & browse, persistent memory
 - Zero-framework: pure `httpx` + `asyncio` — no LangChain, no LiteLLM
@@ -27,9 +27,11 @@
 ```bash
 # From PyPI
 pip install agent-mini
+or 
+uv too install agent-mini
 
-# Or with Telegram support
-pip install agent-mini[all]
+# with Telegram support
+pip install "agent-mini[all]"
 
 # Or from source (for development)
 git clone https://github.com/mohsinkaleem/agent-mini.git
@@ -74,6 +76,8 @@ Set `"provider"` in config to one of these, then configure its section under `"p
 |----------|-------------|-----------|--------|
 | **Ollama** | Local models via Ollama | ✅ | — |
 | **Gemini** | Google Generative AI | ✅ | ✅ |
+| **OpenAI** | OpenAI API (GPT-4o, o1, etc.) | ✅ | ✅ |
+| **Claude** | Anthropic Claude API | ✅ | ✅ |
 | **GitHub Copilot** | Copilot chat API (OAuth) | ✅ | ✅ |
 | **Local** | Any OpenAI-compatible endpoint | ✅ | ✅ |
 
@@ -117,6 +121,38 @@ Get an API key at [aistudio.google.com](https://aistudio.google.com/).
     "gemini": {
       "apiKey": "AIza...",
       "model": "gemini-2.0-flash"
+    }
+  }
+}
+```
+
+### OpenAI
+
+Get an API key at [platform.openai.com](https://platform.openai.com/).
+
+```json
+{
+  "provider": "openai",
+  "providers": {
+    "openai": {
+      "apiKey": "sk-...",
+      "model": "gpt-4o"
+    }
+  }
+}
+```
+
+### Claude
+
+Get an API key at [console.anthropic.com](https://console.anthropic.com/).
+
+```json
+{
+  "provider": "claude",
+  "providers": {
+    "claude": {
+      "apiKey": "sk-ant-...",
+      "model": "claude-sonnet-4-20250514"
     }
   }
 }
@@ -366,6 +402,14 @@ Full config with all options:
       "apiKey": "",
       "model": "gemini-2.0-flash"
     },
+    "openai": {
+      "apiKey": "",
+      "model": "gpt-4o"
+    },
+    "claude": {
+      "apiKey": "",
+      "model": "claude-sonnet-4-20250514"
+    },
     "github_copilot": {
       "token": "",
       "model": "gpt-4o"
@@ -471,6 +515,8 @@ agent-mini/
 │   │   ├── base.py         # Provider interface + tool call repair
 │   │   ├── ollama.py       # Ollama
 │   │   ├── gemini.py       # Google Gemini
+│   │   ├── openai.py       # OpenAI
+│   │   ├── claude.py       # Anthropic Claude
 │   │   ├── github_copilot.py  # GitHub Copilot
 │   │   └── local.py        # OpenAI-compatible
 │   └── channels/
