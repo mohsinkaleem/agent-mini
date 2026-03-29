@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mini"
-version = "0.1.0"
+version = "0.2.0"
 description = "Ultra-lightweight personal AI agent — shell, files, web, memory — powered by local or cloud LLMs"
 readme = "README.md"
 license = "MIT"
