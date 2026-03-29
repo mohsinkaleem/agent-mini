@@ -1,92 +1,36 @@
 # Agent Mini
 
+[![PyPI version](https://img.shields.io/pypi/v/agent-mini)](https://pypi.org/project/agent-mini/)
 [![CI](https://github.com/mohsinkaleem/agent-mini/actions/workflows/ci.yml/badge.svg)](https://github.com/mohsinkaleem/agent-mini/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/agent-mini)](https://pypi.org/project/agent-mini/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Ultra-lightweight personal AI agent** — inspired by [nanobot](https://github.com/HKUDS/nanobot), built lean.
+A minimal, local-first AI agent you can actually understand and extend.
 
-- ~3,500 lines of Python (core agent)
-- 6 LLM providers: **Ollama**, **Gemini**, **OpenAI**, **Claude**, **GitHub Copilot**, **Local** (any OpenAI-compatible)
-- 1 chat channel: **Telegram**
-- Built-in tools: shell, files, web search & browse, persistent memory
-- Zero-framework: pure `httpx` + `asyncio` — no LangChain, no LiteLLM
-- **Optimized for small models** — token-aware context, tool call repair, model-tier tuning
-- **Free web search** — DuckDuckGo scraping, no API key required
-- **Streaming** — real-time token output from all providers
-- **Session persistence** — resume conversations across restarts
-- **Plugin system** — extend with custom tools
-- **Vision support** — send images to multi-modal models
-- **Token tracking** — per-turn and per-session usage stats
+- **~3,000 lines of Python** — read the whole thing in an afternoon
+- **Local-first** — Ollama as default, OpenAI if you want cloud, or any OpenAI-compatible server
+- **Zero frameworks** — pure `httpx` + `asyncio`, no LangChain, no LiteLLM
+- **Built-in tools** — shell, files, web search, persistent memory
+- **Extensible** — drop a Python file in `~/.agent-mini/plugins/` and it's a tool
+- **Small-model optimized** — token-aware context pruning, tool call repair, model-tier tuning
 
 ## Quick Start
 
-### 1. Install
-
 ```bash
-# From PyPI
 pip install agent-mini
-or 
-uv too install agent-mini
-
-# with Telegram support
-pip install "agent-mini[all]"
-
-# Or from source (for development)
-git clone https://github.com/mohsinkaleem/agent-mini.git
-cd agent-mini
-uv sync --extra all
-```
-
-### 2. Initialise
-
-```bash
 agent-mini init
-```
-
-This creates `~/.agent-mini/config.json` — edit it to set your provider and keys.
-
-### 3. Chat
-
-```bash
-# Interactive mode
 agent-mini chat
-
-# Single message
-agent-mini chat -m "What's the weather in London?"
-
-# Resume a previous session
-agent-mini chat -s 20260307_143022
 ```
 
-### 4. Gateway (Telegram)
-
-```bash
-agent-mini gateway
-```
-
----
+The `init` wizard walks you through picking a provider, model, and basic settings. It creates `~/.agent-mini/config.json` — you're ready to chat.
 
 ## Providers
 
-Set `"provider"` in config to one of these, then configure its section under `"providers"`:
+Agent Mini ships with three providers. Set `"provider"` in your config:
 
-| Provider | Description | Streaming | Vision |
-|----------|-------------|-----------|--------|
-| **Ollama** | Local models via Ollama | ✅ | — |
-| **Gemini** | Google Generative AI | ✅ | ✅ |
-| **OpenAI** | OpenAI API (GPT-4o, o1, etc.) | ✅ | ✅ |
-| **Claude** | Anthropic Claude API | ✅ | ✅ |
-| **GitHub Copilot** | Copilot chat API (OAuth) | ✅ | ✅ |
-| **Local** | Any OpenAI-compatible endpoint | ✅ | ✅ |
-
-All providers support streaming responses and tool calling.
-
-### Ollama (default)
+### Ollama (default) — Local Models
 
 ```bash
-# Install & run Ollama: https://ollama.ai
 ollama pull llama3.1
 ```
 
@@ -103,32 +47,9 @@ ollama pull llama3.1
 }
 ```
 
-`think` controls Ollama thinking mode:
-- `false` (default): thinking off
-- `true`: thinking on
-- `"low" | "medium" | "high"`: GPT-OSS thinking levels
-
-References: [Ollama thinking docs](https://docs.ollama.com/capabilities/thinking), [Ollama blog post](https://ollama.com/blog/thinking)
-
-### Gemini
-
-Get an API key at [aistudio.google.com](https://aistudio.google.com/).
-
-```json
-{
-  "provider": "gemini",
-  "providers": {
-    "gemini": {
-      "apiKey": "AIza...",
-      "model": "gemini-2.0-flash"
-    }
-  }
-}
-```
+`think` controls thinking mode — `false`, `true`, or `"low"` / `"medium"` / `"high"`.
 
 ### OpenAI
-
-Get an API key at [platform.openai.com](https://platform.openai.com/).
 
 ```json
 {
@@ -142,45 +63,9 @@ Get an API key at [platform.openai.com](https://platform.openai.com/).
 }
 ```
 
-### Claude
+### Local — Any OpenAI-Compatible Server
 
-Get an API key at [console.anthropic.com](https://console.anthropic.com/).
-
-```json
-{
-  "provider": "claude",
-  "providers": {
-    "claude": {
-      "apiKey": "sk-ant-...",
-      "model": "claude-sonnet-4-20250514"
-    }
-  }
-}
-```
-
-### GitHub Copilot
-
-Requires a GitHub account with Copilot access.
-
-```bash
-# Interactive OAuth login
-agent-mini login github_copilot
-```
-
-```json
-{
-  "provider": "github_copilot",
-  "providers": {
-    "github_copilot": {
-      "model": "gpt-4o"
-    }
-  }
-}
-```
-
-### Local (LM Studio / vLLM / llama.cpp)
-
-Any server that implements the OpenAI chat completions API.
+Works with LM Studio, vLLM, llama.cpp, text-generation-webui, etc.
 
 ```json
 {
@@ -195,15 +80,73 @@ Any server that implements the OpenAI chat completions API.
 }
 ```
 
+All providers support **streaming** and **tool calling**.
+
 ---
 
-## Chat Channels
+## Tools
 
-### Telegram
+Available out of the box — no API keys needed:
 
-1. Create a bot via [@BotFather](https://t.me/BotFather) → copy the token
-2. Get your User ID (Settings → or send a message to [@userinfobot](https://t.me/userinfobot))
-3. Configure:
+| Tool | Description |
+|------|-------------|
+| `shell_exec` | Run shell commands |
+| `read_file` | Read file contents |
+| `write_file` | Create / overwrite files |
+| `append_file` | Append to files |
+| `code_edit` | Find-and-replace in files |
+| `list_directory` | Browse filesystem |
+| `search_files` | Grep / ripgrep across files |
+| `web_search` | DuckDuckGo search (free, no key) |
+| `web_fetch` | Fetch any URL as plain text |
+| `memory_store` | Save to persistent memory |
+| `memory_recall` | Fuzzy search memory (TF-IDF) |
+
+### Plugins
+
+Extend with custom tools — drop a `.py` file in `~/.agent-mini/plugins/`:
+
+```python
+# ~/.agent-mini/plugins/timestamp.py
+from datetime import datetime, timezone
+
+TOOL_DEF = {
+    "type": "function",
+    "function": {
+        "name": "get_timestamp",
+        "description": "Get the current UTC timestamp.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+async def handler(arguments: dict) -> str:
+    return datetime.now(timezone.utc).isoformat()
+```
+
+---
+
+## Chat Commands
+
+```
+/clear              Reset conversation
+/model <name>       Switch provider/model (e.g. ollama/llama3.1)
+/tools              List available tools
+/memory [query]     Browse or search memories
+/status             Show config and token usage
+/save [file]        Export conversation as Markdown
+/sessions           List saved sessions
+/load <id>          Resume a session
+/help               Show commands
+```
+
+Multi-line input: wrap with `"""` or `'''`. Line continuation: end with `\`.
+
+---
+
+## Telegram Gateway
+
+1. Create a bot via [@BotFather](https://t.me/BotFather)
+2. Run `agent-mini init` and enable Telegram during setup, or edit config:
 
 ```json
 {
@@ -218,207 +161,63 @@ Any server that implements the OpenAI chat completions API.
 }
 ```
 
-4. Run: `agent-mini gateway`
-
-`streamResponses: true` enables real-time streamed Telegram replies (works with all providers).
+3. `agent-mini gateway`
 
 ---
 
-## Tools
+## Sandbox & Security
 
-The agent has these built-in tools (all available out of the box — no API keys needed):
-
-| Tool | Description |
-|------|-------------|
-| `shell_exec` | Run any shell command |
-| `read_file` | Read file contents |
-| `append_file` | Append content to a file |
-| `write_file` | Create/overwrite files |
-| `code_edit` | Targeted find-and-replace (safer than write_file) |
-| `list_directory` | Browse the filesystem |
-| `search_files` | Search text/regex across files (uses `rg` or `grep`) |
-| `web_search` | Search the web via DuckDuckGo (free, no API key) |
-| `web_fetch` | Fetch & read any web page as plain text |
-| `memory_store` | Save info to persistent memory |
-| `memory_recall` | Fuzzy search persistent memory (TF-IDF) |
-
-### Web Search & Browsing
-
-Web search uses **DuckDuckGo HTML scraping** — free with no API key needed. It works out of the box.
-
-The agent can:
-1. **Search** — `web_search("Python asyncio tutorial")` returns titles, URLs, and snippets
-2. **Read** — `web_fetch("https://example.com/article")` fetches a page and extracts readable text
-
-### Vision
-
-For providers supporting images (Gemini, Copilot, Local with vision models), include image paths or URLs in your message:
-
-```
-Describe what you see in /path/to/screenshot.png
-What's in this image? https://example.com/photo.jpg
-```
-
-Images are automatically detected, encoded, and sent to the model's multi-modal API.
-
----
-
-## Slash Commands
-
-| Command | Description |
-|---------|-------------|
-| `/clear` | Reset conversation |
-| `/model <name>` | Switch provider/model (e.g. `gemini/gemini-2.0-flash`) |
-| `/tools` | List available tools with descriptions |
-| `/memory [query]` | Browse or search stored memories |
-| `/status` | Show current config, token usage |
-| `/save [file]` | Export conversation as Markdown |
-| `/sessions` | List saved sessions |
-| `/load <id>` | Resume a saved session |
-| `/help` | Show all commands |
-
-### Multi-Line Input
-
-Start with `"""` or `'''` and end with the same delimiter:
-
-```
-"""
-def hello():
-    print("world")
-"""
-```
-
-Or use `\` for line continuation.
-
----
-
-## Sandbox Levels
-
-Control tool access with `tools.sandboxLevel` in config:
+Control tool access:
 
 | Level | Description |
 |-------|-------------|
 | `unrestricted` | All tools, all paths |
 | `workspace` | All tools, paths restricted to workspace (default) |
-| `readonly` | Read-only — no shell, write_file, append_file, or code_edit |
+| `readonly` | Read-only — no shell, write, edit |
 
 ```json
-{
-  "tools": {
-    "sandboxLevel": "readonly"
-  }
-}
+{ "tools": { "sandboxLevel": "readonly" } }
 ```
 
-### Command Blocklist
-
-Dangerous shell commands are blocked by default (`rm -rf`, `sudo`, `mkfs`, etc.). Add custom patterns:
-
-```json
-{
-  "tools": {
-    "blockedCommands": ["\\bcurl\\b", "\\bwget\\b"]
-  }
-}
-```
+Dangerous shell commands (`rm -rf`, `sudo`, `mkfs`, etc.) are blocked by default.
 
 ---
 
 ## Sessions
 
-Conversations are automatically saved after each turn. Resume with:
+Conversations auto-save after each turn. Resume:
 
 ```bash
-# List saved sessions
-agent-mini chat
-/sessions
-
-# Resume by ID
 agent-mini chat -s 20260307_143022
-
-# Or inside the REPL
-/load 20260307_143022
 ```
 
-Sessions are stored in `~/.agent-mini/sessions/`.
+Or inside the REPL: `/sessions` to list, `/load <id>` to resume.
 
 ---
 
-## Plugins
+## How It Works
 
-Extend the agent with custom tools by placing Python files in `~/.agent-mini/plugins/`.
+Agent Mini is a **ReAct loop** — the LLM reasons, picks a tool, observes the result, and repeats until it has an answer.
 
-Each plugin file must export:
-- `TOOL_DEF` — an OpenAI function-calling tool definition dict
-- `handler` — an async (or sync) function that takes `arguments: dict` and returns a string
+Key design choices for small/local models:
 
-Example plugin (`~/.agent-mini/plugins/timestamp.py`):
-
-```python
-TOOL_DEF = {
-    "type": "function",
-    "function": {
-        "name": "get_timestamp",
-        "description": "Get the current UTC timestamp.",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
-}
-
-async def handler(arguments: dict) -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).isoformat()
-```
-
-Plugins are discovered at startup and available alongside built-in tools.
-
----
-
-## Token Tracking
-
-Token usage is displayed after each response (when reported by the provider):
-
-```
-  tokens: 1250→ 380← (1630 total)
-```
-
-Use `/status` to see cumulative session totals.
+- **Token-aware context** — estimates token usage and prunes old tool results when approaching the model's effective context window
+- **Model tier classification** — auto-detects tiny/small/medium/cloud models and adjusts context budgets, iteration limits, and output caps
+- **Tool call repair** — fixes malformed JSON from small models (trailing commas, single quotes, unquoted keys)
+- **Loop detection** — catches repeated identical tool calls and nudges the LLM to try a different approach
+- **History summarization** — compresses long conversations to stay within context
 
 ---
 
 ## Configuration Reference
 
-Full config with all options:
-
 ```json
 {
   "provider": "ollama",
   "providers": {
-    "ollama": {
-      "baseUrl": "http://localhost:11434",
-      "model": "llama3.1",
-      "think": false
-    },
-    "gemini": {
-      "apiKey": "",
-      "model": "gemini-2.0-flash"
-    },
-    "openai": {
-      "apiKey": "",
-      "model": "gpt-4o"
-    },
-    "claude": {
-      "apiKey": "",
-      "model": "claude-sonnet-4-20250514"
-    },
-    "github_copilot": {
-      "token": "",
-      "model": "gpt-4o"
-    },
-    "local": {
-      "baseUrl": "http://localhost:8080/v1",
-      "apiKey": "no-key",
-      "model": "local-model"
-    }
+    "ollama": { "baseUrl": "http://localhost:11434", "model": "llama3.1", "think": false },
+    "openai": { "apiKey": "", "model": "gpt-4o" },
+    "local":  { "baseUrl": "http://localhost:8080/v1", "apiKey": "no-key", "model": "local-model" }
   },
   "agent": {
     "maxIterations": 20,
@@ -426,71 +225,31 @@ Full config with all options:
     "systemPrompt": ""
   },
   "channels": {
-    "telegram": {
-      "enabled": false,
-      "token": "",
-      "allowFrom": [],
-      "streamResponses": true
-    }
+    "telegram": { "enabled": false, "token": "", "allowFrom": [], "streamResponses": true }
   },
-  "tools": {
-    "restrictToWorkspace": false,
-    "sandboxLevel": "workspace",
-    "blockedCommands": []
-  },
-  "memory": {
-    "enabled": true,
-    "maxEntries": 1000
-  },
+  "tools": { "restrictToWorkspace": false, "sandboxLevel": "workspace", "blockedCommands": [] },
+  "memory": { "enabled": true, "maxEntries": 1000 },
   "workspace": "~/.agent-mini/workspace"
 }
 ```
 
----
-
-## Development
-
-```bash
-# Install dev dependencies
-uv sync --extra dev
-
-# Run tests
-uv run pytest tests/ -v
-
-# Lint
-uv run ruff check src/ tests/
-
-# Run a single test file
-uv run pytest tests/test_loop.py -v
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on submitting PRs.
-
-This is a lightweight pure-`httpx` approach: no browser process, no Playwright/Selenium, no headless Chrome. HTML is parsed via Python's built-in `html.parser` and converted to clean readable text.
-
-### Security
-
-Set `"restrictToWorkspace": true` to sandbox file and shell operations to the workspace directory:
-
-```json
-{
-  "tools": {
-    "restrictToWorkspace": true
-  }
-}
-```
+Key paths:
+- Config: `~/.agent-mini/config.json`
+- Workspace: `~/.agent-mini/workspace/`
+- Memory: `~/.agent-mini/memory.json`
+- Plugins: `~/.agent-mini/plugins/`
+- Sessions: `~/.agent-mini/sessions/`
 
 ---
 
-## CLI Reference
+## CLI
 
 | Command | Description |
 |---------|-------------|
-| `agent-mini init` | Create config and workspace |
+| `agent-mini init` | Interactive setup wizard |
 | `agent-mini chat` | Interactive chat |
 | `agent-mini chat -m "..."` | Single message |
-| `agent-mini gateway` | Start Telegram gateway |
-| `agent-mini login github_copilot` | OAuth login for GitHub Copilot |
+| `agent-mini gateway` | Start Telegram bot |
 | `agent-mini status` | Show config status |
 
 ---
@@ -498,43 +257,39 @@ Set `"restrictToWorkspace": true` to sandbox file and shell operations to the wo
 ## Project Structure
 
 ```
-agent-mini/
-├── src/agent_mini/
-│   ├── cli.py              # CLI commands
-│   ├── config.py           # Config loading
-│   ├── bus.py              # Message routing
-│   ├── sessions.py         # Session persistence
-│   ├── agent/
-│   │   ├── loop.py         # Core ReAct agent loop
-│   │   ├── context.py      # System prompt builder
-│   │   ├── memory.py       # Persistent JSON memory + TF-IDF search
-│   │   ├── tools.py        # Built-in tools + plugin loader
-│   │   ├── token_estimator.py  # Token counting + model tier classification
-│   │   └── vision.py       # Image detection + encoding
-│   ├── providers/
-│   │   ├── base.py         # Provider interface + tool call repair
-│   │   ├── ollama.py       # Ollama
-│   │   ├── gemini.py       # Google Gemini
-│   │   ├── openai.py       # OpenAI
-│   │   ├── claude.py       # Anthropic Claude
-│   │   ├── github_copilot.py  # GitHub Copilot
-│   │   └── local.py        # OpenAI-compatible
-│   └── channels/
-│       ├── base.py         # Channel interface
-│       └── telegram.py     # Telegram bot
-├── tests/
-├── pyproject.toml
-└── config.example.json
+src/agent_mini/
+├── cli.py                  # CLI commands (Click)
+├── config.py               # Typed config
+├── bus.py                  # Message routing
+├── sessions.py             # Session persistence
+├── agent/
+│   ├── loop.py             # ReAct agent loop
+│   ├── context.py          # System prompt builder
+│   ├── memory.py           # JSON memory + TF-IDF search
+│   ├── tools.py            # Built-in tools + plugin loader
+│   ├── token_estimator.py  # Token counting + model tiers
+│   └── vision.py           # Image detection + encoding
+├── providers/
+│   ├── base.py             # Provider interface
+│   ├── ollama.py           # Ollama
+│   ├── openai.py           # OpenAI
+│   └── local.py            # OpenAI-compatible
+└── channels/
+    ├── base.py             # Channel interface
+    └── telegram.py         # Telegram bot
 ```
 
-## Configuration
+## Development
 
-Full config lives at `~/.agent-mini/config.json`. See [config.example.json](config.example.json) for all options.
+```bash
+git clone https://github.com/mohsinkaleem/agent-mini.git
+cd agent-mini
+uv sync --extra dev
+uv run pytest tests/ -v
+uv run ruff check src/ tests/
+```
 
-Key paths:
-- Config: `~/.agent-mini/config.json`
-- Workspace: `~/.agent-mini/workspace/`
-- Memory: `~/.agent-mini/memory.json`
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 

@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 authors = [
     { name = "Mohsin Kaleem", email = "mohsin.kaleem512@gmail.com" },
 ]
-keywords = ["ai", "agent", "llm", "ollama", "gemini", "copilot", "cli", "telegram"]
+keywords = ["ai", "agent", "llm", "ollama", "local", "cli", "telegram"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",

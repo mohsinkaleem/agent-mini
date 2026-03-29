@@ -86,8 +86,7 @@ src/agent_mini/
 ├── providers/
 │   ├── base.py         # Provider interface + tool call parsing
 │   ├── ollama.py       # Ollama provider
-│   ├── gemini.py       # Google Gemini provider
-│   ├── github_copilot.py  # GitHub Copilot (OAuth device flow)
+│   ├── openai.py       # OpenAI provider
 │   └── local.py        # Any OpenAI-compatible endpoint
 └── channels/
     ├── base.py         # Channel interface

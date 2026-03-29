@@ -62,59 +62,145 @@ def cli():
 
 @cli.command()
 def init():
-    """Initialise config and workspace."""
+    """Initialise config and workspace with interactive onboarding."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
 
     if CONFIG_FILE.exists():
         console.print(f"[yellow]Config already exists at {CONFIG_FILE}[/yellow]")
-    else:
-        default = {
-            "provider": "ollama",
-            "providers": {
-                "ollama": {
-                    "baseUrl": "http://localhost:11434",
-                    "model": "llama3.1",
-                    "think": False,
-                },
-                "gemini": {"apiKey": "", "model": "gemini-2.0-flash"},
-                "openai": {"apiKey": "", "model": "gpt-4o"},
-                "claude": {"apiKey": "", "model": "claude-sonnet-4-20250514"},
-                "github_copilot": {"token": "", "model": "gpt-4o"},
-                "local": {
-                    "baseUrl": "http://localhost:8080/v1",
-                    "apiKey": "no-key",
-                    "model": "local-model",
-                },
-            },
-            "agent": {
-                "maxIterations": 20,
-                "temperature": 0.7,
-                "systemPrompt": "",
-            },
-            "channels": {
-                "telegram": {
-                    "enabled": False,
-                    "token": "",
-                    "allowFrom": [],
-                    "streamResponses": True,
-                },
-            },
-            "tools": {
-                "restrictToWorkspace": False,
-            },
-            "memory": {"enabled": True, "maxEntries": 1000},
-            "workspace": str(DEFAULT_WORKSPACE),
-        }
-        save_config(default)
-        console.print(f"[green]✓ Config created → {CONFIG_FILE}[/green]")
+        overwrite = click.confirm("Overwrite with a fresh config?", default=False)
+        if not overwrite:
+            console.print("[dim]Keeping existing config.[/dim]")
+            return
 
-    console.print(f"[green]✓ Workspace → {DEFAULT_WORKSPACE}[/green]")
+    console.print(Panel(
+        "[bold green]Agent Mini[/bold green] — Setup Wizard",
+        border_style="green",
+        padding=(0, 1),
+    ))
     console.print()
-    console.print("[bold]Next steps:[/bold]")
-    console.print(f"  1. Edit config:  [cyan]$EDITOR {CONFIG_FILE}[/cyan]")
-    console.print("  2. Set your provider and API keys")
-    console.print("  3. Start chatting: [cyan]agent-mini chat[/cyan]")
+
+    # ── Step 1: Provider ────────────────────────────────────────────
+    console.print("[bold]1. Choose your LLM provider[/bold]\n")
+    providers = [
+        ("ollama", "Local models via Ollama (recommended)"),
+        ("openai", "OpenAI API (GPT-4o, o1, etc.)"),
+        ("local", "Any OpenAI-compatible server (LM Studio, vLLM, llama.cpp)"),
+    ]
+    for i, (name, desc) in enumerate(providers, 1):
+        console.print(f"  [cyan]{i}[/cyan]) [bold]{name}[/bold] — {desc}")
+    console.print()
+
+    choice = click.prompt(
+        "Select provider",
+        type=click.IntRange(1, len(providers)),
+        default=1,
+    )
+    provider_name = providers[choice - 1][0]
+    console.print(f"  → [green]{provider_name}[/green]\n")
+
+    # ── Step 2: Provider-specific config ────────────────────────────
+    console.print("[bold]2. Provider settings[/bold]\n")
+
+    providers_cfg: dict = {}
+
+    if provider_name == "ollama":
+        base_url = click.prompt(
+            "  Ollama base URL",
+            default="http://localhost:11434",
+        )
+        model = click.prompt("  Model name", default="llama3.1")
+        think = click.confirm("  Enable thinking mode?", default=False)
+        providers_cfg["ollama"] = {
+            "baseUrl": base_url,
+            "model": model,
+            "think": think,
+        }
+
+    elif provider_name == "openai":
+        api_key = click.prompt("  OpenAI API key", hide_input=True)
+        model = click.prompt("  Model name", default="gpt-4o")
+        providers_cfg["openai"] = {"apiKey": api_key, "model": model}
+
+    elif provider_name == "local":
+        base_url = click.prompt(
+            "  Server base URL",
+            default="http://localhost:8080/v1",
+        )
+        api_key = click.prompt("  API key (or 'no-key')", default="no-key")
+        model = click.prompt("  Model name", default="local-model")
+        providers_cfg["local"] = {
+            "baseUrl": base_url,
+            "apiKey": api_key,
+            "model": model,
+        }
+
+    console.print()
+
+    # ── Step 3: Workspace ───────────────────────────────────────────
+    console.print("[bold]3. Workspace[/bold]\n")
+    workspace = click.prompt(
+        "  Workspace directory",
+        default=str(DEFAULT_WORKSPACE),
+    )
+    console.print()
+
+    # ── Step 4: Memory ──────────────────────────────────────────────
+    console.print("[bold]4. Memory[/bold]\n")
+    memory_enabled = click.confirm("  Enable persistent memory?", default=True)
+    console.print()
+
+    # ── Step 5: Telegram (optional) ─────────────────────────────────
+    console.print("[bold]5. Telegram gateway (optional)[/bold]\n")
+    telegram_enabled = click.confirm("  Set up Telegram bot?", default=False)
+    telegram_cfg = {
+        "enabled": False,
+        "token": "",
+        "allowFrom": [],
+        "streamResponses": True,
+    }
+    if telegram_enabled:
+        tg_token = click.prompt("  Bot token (from @BotFather)")
+        tg_users = click.prompt(
+            "  Allowed user IDs (comma-separated, or leave blank)",
+            default="",
+        )
+        allow_list = [u.strip() for u in tg_users.split(",") if u.strip()]
+        telegram_cfg = {
+            "enabled": True,
+            "token": tg_token,
+            "allowFrom": allow_list,
+            "streamResponses": True,
+        }
+    console.print()
+
+    # ── Build & save config ─────────────────────────────────────────
+    config = {
+        "provider": provider_name,
+        "providers": providers_cfg,
+        "agent": {
+            "maxIterations": 20,
+            "temperature": 0.7,
+            "systemPrompt": "",
+        },
+        "channels": {"telegram": telegram_cfg},
+        "tools": {"restrictToWorkspace": False},
+        "memory": {"enabled": memory_enabled, "maxEntries": 1000},
+        "workspace": workspace,
+    }
+    save_config(config)
+
+    console.print(Panel(
+        f"[green]✓ Config saved → {CONFIG_FILE}[/green]\n"
+        f"[green]✓ Workspace  → {workspace}[/green]",
+        border_style="green",
+        padding=(0, 1),
+    ))
+    console.print()
+    console.print("[bold]Ready![/bold] Start chatting:")
+    console.print("  [cyan]agent-mini chat[/cyan]")
+    if telegram_enabled:
+        console.print("  [cyan]agent-mini gateway[/cyan]  (start Telegram bot)")
 
 
 # ======================================================================
@@ -301,7 +387,7 @@ async def _handle_slash_command(
         help_table.add_column("Command", style="cyan bold", no_wrap=True)
         help_table.add_column("Description", style="dim")
         help_table.add_row("/clear", "Reset conversation")
-        help_table.add_row("/model <name>", "Switch provider/model (e.g. gemini/gemini-2.0-flash)")
+        help_table.add_row("/model <name>", "Switch provider/model (e.g. ollama/llama3.1)")
         help_table.add_row("/tools", "List available tools")
         help_table.add_row("/memory [query]", "Browse/search stored memories")
         help_table.add_row("/status", "Show current config")
@@ -550,41 +636,6 @@ async def _gateway(config: dict) -> None:
         for ch in channels:
             await ch.stop()
         await agent.close()
-
-
-# ======================================================================
-# login  (GitHub Copilot OAuth device-flow)
-# ======================================================================
-
-
-@cli.command()
-@click.argument("provider_name", default="github_copilot")
-def login(provider_name: str):
-    """Authenticate with a provider (e.g. github_copilot)."""
-    if provider_name not in ("github_copilot", "github-copilot"):
-        console.print(
-            f"[yellow]Login is only needed for github_copilot. "
-            f"For {provider_name}, set the API key in config.[/yellow]"
-        )
-        return
-
-    from .providers.github_copilot import GitHubCopilotProvider
-
-    console.print("[bold]GitHub Copilot — OAuth Device Flow[/bold]\n")
-    try:
-        token = GitHubCopilotProvider.device_flow_login()
-    except Exception as e:
-        console.print(f"[red]Login failed: {e}[/red]")
-        raise SystemExit(1)
-
-    config = load_config()
-    config.setdefault("providers", {}).setdefault("github_copilot", {})["token"] = token
-    save_config(config)
-
-    console.print(f"\n[green]✓ Token saved to {CONFIG_FILE}[/green]")
-    console.print(
-        '  Set [cyan]"provider": "github_copilot"[/cyan] in config to use it.'
-    )
 
 
 # ======================================================================

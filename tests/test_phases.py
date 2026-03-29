@@ -150,9 +150,9 @@ def test_session_not_found(tmp_path: Path, monkeypatch):
 
 def test_app_config_from_dict():
     raw = {
-        "provider": "gemini",
+        "provider": "openai",
         "providers": {
-            "gemini": {"apiKey": "test-key", "model": "gemini-pro"},
+            "openai": {"apiKey": "test-key", "model": "gpt-4o"},
             "ollama": {"model": "llama3"},
         },
         "agent": {"maxIterations": 10, "temperature": 0.5},
@@ -160,9 +160,9 @@ def test_app_config_from_dict():
         "memory": {"enabled": True, "maxEntries": 500},
     }
     cfg = AppConfig.from_dict(raw)
-    assert cfg.provider == "gemini"
-    assert cfg.providers.gemini.apiKey == "test-key"
-    assert cfg.providers.gemini.model == "gemini-pro"
+    assert cfg.provider == "openai"
+    assert cfg.providers.openai.apiKey == "test-key"
+    assert cfg.providers.openai.model == "gpt-4o"
     assert cfg.providers.ollama.model == "llama3"
     assert cfg.agent.maxIterations == 10
     assert cfg.tools.sandboxLevel == "readonly"

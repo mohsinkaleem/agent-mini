@@ -25,26 +25,8 @@ class OllamaConfig:
 
 
 @dataclass
-class GeminiConfig:
-    apiKey: str = ""
-    model: str = "gemini-2.0-flash"
-
-
-@dataclass
 class OpenAIConfig:
     apiKey: str = ""
-    model: str = "gpt-4o"
-
-
-@dataclass
-class ClaudeConfig:
-    apiKey: str = ""
-    model: str = "claude-sonnet-4-20250514"
-
-
-@dataclass
-class GitHubCopilotConfig:
-    token: str = ""
     model: str = "gpt-4o"
 
 
@@ -58,10 +40,7 @@ class LocalConfig:
 @dataclass
 class ProvidersConfig:
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
-    gemini: GeminiConfig = field(default_factory=GeminiConfig)
     openai: OpenAIConfig = field(default_factory=OpenAIConfig)
-    claude: ClaudeConfig = field(default_factory=ClaudeConfig)
-    github_copilot: GitHubCopilotConfig = field(default_factory=GitHubCopilotConfig)
     local: LocalConfig = field(default_factory=LocalConfig)
 
 
@@ -121,12 +100,7 @@ class AppConfig:
             provider=data.get("provider", "ollama"),
             providers=ProvidersConfig(
                 ollama=OllamaConfig(**_pick(providers_raw.get("ollama", {}), OllamaConfig)),
-                gemini=GeminiConfig(**_pick(providers_raw.get("gemini", {}), GeminiConfig)),
                 openai=OpenAIConfig(**_pick(providers_raw.get("openai", {}), OpenAIConfig)),
-                claude=ClaudeConfig(**_pick(providers_raw.get("claude", {}), ClaudeConfig)),
-                github_copilot=GitHubCopilotConfig(
-                    **_pick(providers_raw.get("github_copilot", {}), GitHubCopilotConfig)
-                ),
                 local=LocalConfig(**_pick(providers_raw.get("local", {}), LocalConfig)),
             ),
             agent=AgentConfig(**_pick(data.get("agent", {}), AgentConfig)),

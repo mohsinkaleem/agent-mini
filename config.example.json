@@ -6,20 +6,8 @@
       "model": "llama3.1",
       "think": false
     },
-    "gemini": {
-      "apiKey": "",
-      "model": "gemini-2.0-flash"
-    },
     "openai": {
       "apiKey": "",
-      "model": "gpt-4o"
-    },
-    "claude": {
-      "apiKey": "",
-      "model": "claude-sonnet-4-20250514"
-    },
-    "github_copilot": {
-      "token": "",
       "model": "gpt-4o"
     },
     "local": {
