@@ -161,6 +161,30 @@ async def test_max_iterations(config, memory):
 
 
 @pytest.mark.asyncio
+async def test_max_iterations_persists_turn(config, memory):
+    """B4: reaching max iterations must still leave a record of the turn
+    in *conversation* so session history matches what the user sees."""
+    config["agent"]["maxIterations"] = 2
+    tool_response = FakeResponse(
+        content="",
+        tool_calls=[
+            FakeToolCall(id="tc1", name="list_directory", arguments={"path": "."})
+        ],
+    )
+    responses = [tool_response] * 5
+    agent = _make_agent(config, memory, responses)
+    conversation: list[dict] = []
+    await agent.run("keep looping", conversation)
+
+    # Both sides of the turn must be persisted.
+    assert len(conversation) == 2
+    assert conversation[0] == {"role": "user", "content": "keep looping"}
+    assert conversation[1]["role"] == "assistant"
+    assert "max iterations" in conversation[1]["content"].lower()
+    await agent.close()
+
+
+@pytest.mark.asyncio
 async def test_retry_on_transient_error(config, memory):
     """Transient HTTP errors should be retried."""
     # First call fails with 503, second succeeds

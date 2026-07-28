@@ -1,0 +1,14 @@
+id: codebase_qa
+category: qa
+setup: fixtures/small_repo
+timeout_seconds: 180
+prompt: |
+  Look at this repository, find what network port the server listens on,
+  and write ONLY the port number as an integer to a file named `answer.txt`
+  in the workspace root. Do not add any prose.
+checks:
+  - shell: "test -f answer.txt"
+    description: "answer.txt exists"
+  - shell: "cat answer.txt"
+    description: "answer.txt contains 9137"
+    expect_stdout: "9137"

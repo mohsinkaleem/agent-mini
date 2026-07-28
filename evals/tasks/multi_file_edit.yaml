@@ -1,0 +1,16 @@
+id: multi_file_edit
+category: refactor
+setup: fixtures/small_repo
+timeout_seconds: 240
+prompt: |
+  Bump the VERSION in `src/config.py` from `0.4.2` to `0.5.0`. Then add
+  a NEW file `VERSION.txt` in the workspace root containing ONLY the new
+  version string (no newline, no prose).
+checks:
+  - shell: "grep -q 'VERSION = \"0.5.0\"' src/config.py"
+    description: "config.py updated"
+  - shell: "test -f VERSION.txt"
+    description: "VERSION.txt created"
+  - shell: "cat VERSION.txt"
+    description: "VERSION.txt content"
+    expect_stdout: "0.5.0"

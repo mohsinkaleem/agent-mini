@@ -1,0 +1,15 @@
+id: write_file_from_scratch
+category: file_ops
+timeout_seconds: 120
+prompt: |
+  Create a file named `hello.py` in this workspace containing a single
+  function `greet(name)` that returns the string `"Hello, "` followed by
+  the name. The function must be importable — no scripts, no `print`,
+  no `if __name__ == "__main__"` blocks. Verify by running:
+      python -c "from hello import greet; print(greet('Ada'))"
+checks:
+  - shell: "test -f hello.py"
+    description: "hello.py exists"
+  - shell: "python -c 'from hello import greet; print(greet(\"Ada\"))'"
+    description: "greet('Ada') returns 'Hello, Ada'"
+    expect_stdout: "Hello, Ada"

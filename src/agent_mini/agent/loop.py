@@ -98,7 +98,12 @@ class AgentLoop:
         turns) so the caller can maintain session state.
         When *on_stream* is provided, partial text deltas are emitted in real time.
         """
-        system_prompt = build_system_prompt(self.config, self.memory)
+        system_prompt = build_system_prompt(
+            self.config,
+            self.memory,
+            model_name=self._model_name,
+            tool_defs=self.tools.get_tool_defs(),
+        )
         tool_defs = self.tools.get_tool_defs()
 
         # Reset per-turn usage tracking
@@ -239,6 +244,13 @@ class AgentLoop:
                         ),
                     })
 
+        # Max-iteration exhaustion: persist the turn so session history
+        # reflects it happened, otherwise the next turn has no memory of it.
+        conversation.append({"role": "user", "content": user_message})
+        conversation.append({
+            "role": "assistant",
+            "content": "[Stopped: reached max iterations without completing.]",
+        })
         return "Reached maximum iterations. Please try a simpler request."
 
     def _prune_tool_results(self, messages: list[dict]) -> list[dict]:
@@ -273,13 +285,12 @@ class AgentLoop:
         """Summarize oldest messages in-place to keep context bounded."""
         # Determine how many messages to summarize: enough to drop below
         # 50% of effective context, but at least 6 messages.
+        total = estimate_messages_tokens(conversation)
         target = int(self._effective_ctx * 0.5)
-        tokens_so_far = 0
-        cut = 0
+        acc, cut = 0, 0
         for i, msg in enumerate(conversation):
-            content = msg.get("content", "")
-            tokens_so_far += len(content) // 4 + 4 if isinstance(content, str) else 50
-            if tokens_so_far > (estimate_messages_tokens(conversation) - target):
+            acc += estimate_messages_tokens([msg])
+            if acc > total - target:
                 cut = max(i, 6)
                 break
         if cut < 6:
@@ -317,9 +328,13 @@ class AgentLoop:
             log.warning("Failed to summarize history: %s", e)
             return
 
+        # Use role='user' rather than 'system' — the real system prompt is
+        # prepended fresh every turn in run(), so a second 'system' entry
+        # here would give small models two leading system messages and
+        # dilute the constraint-first anchoring they rely on.
         new_conversation = [
             {
-                "role": "system",
+                "role": "user",
                 "content": f"[Previous context summary]\n{summary_text}",
             },
         ]
@@ -339,34 +354,23 @@ class AgentLoop:
                         tools=tool_defs or None,
                         temperature=self.temperature,
                     )
-                else:
-                    return await self.provider.chat(
-                        messages,
-                        tools=tool_defs or None,
-                        temperature=self.temperature,
-                    )
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code in _TRANSIENT_CODES and attempt < max_retries - 1:
-                    wait = (2 ** attempt) + random.uniform(0, 1)  # jitter
-                    log.warning(
-                        "Transient HTTP %d, retrying in %.1fs (attempt %d/%d)",
-                        e.response.status_code, wait, attempt + 1, max_retries,
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                log.error("Provider error: %s", e)
-                return f"Error communicating with LLM: {e}"
-            except (httpx.ConnectError, httpx.ReadTimeout, OSError) as e:
-                if attempt < max_retries - 1:
-                    wait = (2 ** attempt) + random.uniform(0, 1)  # jitter
-                    log.warning(
-                        "Connection error, retrying in %.1fs (attempt %d/%d): %s",
-                        wait, attempt + 1, max_retries, e,
-                    )
-                    await asyncio.sleep(wait)
-                    continue
-                log.error("Provider error after %d attempts: %s", max_retries, e)
-                return f"Error communicating with LLM: {e}"
+                return await self.provider.chat(
+                    messages,
+                    tools=tool_defs or None,
+                    temperature=self.temperature,
+                )
             except Exception as e:
+                transient = (
+                    isinstance(e, httpx.HTTPStatusError)
+                    and e.response.status_code in _TRANSIENT_CODES
+                ) or isinstance(e, (httpx.ConnectError, httpx.ReadTimeout, OSError))
+                if transient and attempt < max_retries - 1:
+                    wait = (2 ** attempt) + random.uniform(0, 1)  # jitter
+                    log.warning(
+                        "Transient error, retry %d/%d in %.1fs: %s",
+                        attempt + 1, max_retries, wait, e,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
                 log.error("Provider error: %s", e)
                 return f"Error communicating with LLM: {e}"

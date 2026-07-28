@@ -11,8 +11,9 @@ A minimal, local-first AI agent you can actually understand and extend.
 - **Local-first** — Ollama as default, OpenAI if you want cloud, or any OpenAI-compatible server
 - **Zero frameworks** — pure `httpx` + `asyncio`, no LangChain, no LiteLLM
 - **Built-in tools** — shell, files, web search, persistent memory
+- **Vision** — drop an image path or URL into any message; works on Ollama, OpenAI, and OpenAI-compatible providers
 - **Extensible** — drop a Python file in `~/.agent-mini/plugins/` and it's a tool
-- **Small-model optimized** — token-aware context pruning, tool call repair, model-tier tuning
+- **Small-model optimized** — tier-scaled system prompt, token-aware context pruning, tool-call repair, and a [task-eval harness](evals/) to measure whether the tuning actually pays off
 
 ## Quick Start
 
@@ -98,7 +99,7 @@ Available out of the box — no API keys needed:
 | `list_directory` | Browse filesystem |
 | `search_files` | Grep / ripgrep across files |
 | `web_search` | DuckDuckGo search (free, no key) |
-| `web_fetch` | Fetch any URL as plain text |
+| `web_fetch` | Fetch a public URL as plain text (private/loopback hosts blocked) |
 | `memory_store` | Save to persistent memory |
 | `memory_recall` | Fuzzy search memory (TF-IDF) |
 
@@ -179,7 +180,9 @@ Control tool access:
 { "tools": { "sandboxLevel": "readonly" } }
 ```
 
-Dangerous shell commands (`rm -rf`, `sudo`, `mkfs`, etc.) are blocked by default.
+Dangerous shell commands (`rm -rf`, `sudo`, `mkfs`, etc.) are blocked by default. Treat the shell blocklist as **friction, not a boundary** — a determined caller can bypass it, so don't run the agent in an untrusted context and expect the blocklist to save you.
+
+`web_fetch` is guarded against basic SSRF: requests to `localhost`, loopback (`::1`), RFC-1918 private ranges, and link-local (including the cloud metadata endpoint `169.254.169.254`) are refused, and the final URL is re-checked after every redirect. DNS rebinding can still bypass — use `sandboxLevel: readonly` if you need a stronger guarantee.
 
 ---
 
@@ -201,11 +204,14 @@ Agent Mini is a **ReAct loop** — the LLM reasons, picks a tool, observes the r
 
 Key design choices for small/local models:
 
+- **Tier-scaled system prompt** — tiny models get a compact rules block and no memory recall; larger tiers get the full descriptive prompt and recent context
+- **Inline tool list** — `<available_tools>` block in the system prompt so small models can see tool names at a glance without inferring from the JSON schema
 - **Token-aware context** — estimates token usage and prunes old tool results when approaching the model's effective context window
-- **Model tier classification** — auto-detects tiny/small/medium/cloud models and adjusts context budgets, iteration limits, and output caps
+- **Model tier classification** — auto-detects tiny/small/medium/cloud (including large open-weight sizes like `:32b`, `:70b`, `8x7b`) and adjusts context budgets, iteration limits, and output caps
 - **Tool call repair** — fixes malformed JSON from small models (trailing commas, single quotes, unquoted keys)
 - **Loop detection** — catches repeated identical tool calls and nudges the LLM to try a different approach
 - **History summarization** — compresses long conversations to stay within context
+- **[Task-eval harness](evals/)** — measures success rate, iterations, tokens, and JSON-repair fire-rate across model tiers so the tuning above is testable, not hand-waved
 
 ---
 
@@ -249,6 +255,7 @@ Key paths:
 | `agent-mini init` | Interactive setup wizard |
 | `agent-mini chat` | Interactive chat |
 | `agent-mini chat -m "..."` | Single message |
+| `agent-mini chat --workspace <dir>` | Override the workspace for a single run (also honours `AGENT_MINI_WORKSPACE`) |
 | `agent-mini gateway` | Start Telegram bot |
 | `agent-mini status` | Show config status |
 
@@ -288,6 +295,21 @@ uv sync --extra dev
 uv run pytest tests/ -v
 uv run ruff check src/ tests/
 ```
+
+### Task evals
+
+The [`evals/`](evals/) directory contains a small, framework-free task-eval
+harness that runs the agent end-to-end against real fixtures (refactor a
+codebase, fix a failing test, answer a codebase question, etc.). Use it to
+measure whether the small-model optimizations actually pay off:
+
+```bash
+python evals/run.py                        # run all tasks against config model
+python evals/run.py --task refactor_rename # single task
+python evals/run.py --compare results/*.json  # cross-tier comparison table
+```
+
+See [evals/README.md](evals/README.md) for the full workflow.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 

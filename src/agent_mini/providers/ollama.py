@@ -152,7 +152,13 @@ class OllamaProvider(BaseProvider):
 
     @staticmethod
     def _clean_messages(messages: list[dict]) -> list[dict]:
-        """Ollama expects a flat message list; convert tool results."""
+        """Ollama expects a flat message list; convert tool results.
+
+        Also translates OpenAI-style vision content parts
+        (``[{"type": "image_url", "image_url": {"url": "..."}}, ...]``)
+        into Ollama's flat ``images: ["<base64>"]`` field on the message,
+        so vision works on the default provider.
+        """
         cleaned = []
         for msg in messages:
             if msg["role"] == "tool":
@@ -166,6 +172,31 @@ class OllamaProvider(BaseProvider):
                         ),
                     }
                 )
-            else:
-                cleaned.append({k: v for k, v in msg.items() if k != "tool_calls"})
+                continue
+
+            base = {k: v for k, v in msg.items() if k != "tool_calls"}
+            content = base.get("content")
+
+            # OpenAI-style multi-part content → Ollama flat {content, images}.
+            if isinstance(content, list):
+                texts: list[str] = []
+                images: list[str] = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        texts.append(part.get("text", ""))
+                    elif part.get("type") == "image_url":
+                        url = (part.get("image_url") or {}).get("url", "")
+                        # Ollama's `images` accepts either a raw base64 string
+                        # or a URL. Strip the `data:...;base64,` prefix if
+                        # present so it works with older builds too.
+                        if url.startswith("data:") and ";base64," in url:
+                            url = url.split(";base64,", 1)[1]
+                        if url:
+                            images.append(url)
+                base["content"] = "\n".join(t for t in texts if t)
+                if images:
+                    base["images"] = images
+            cleaned.append(base)
         return cleaned

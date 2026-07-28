@@ -147,12 +147,15 @@ class LocalProvider(BaseProvider):
         content = "".join(content_parts) or None
         tcs: list[ToolCall] | None = None
         if tool_calls_by_idx:
+            # Sort by the integer stream index — the true order the model
+            # emitted the calls in. Sorting by `id` (an opaque string) can
+            # scramble order (e.g. "call_10" < "call_2" lexicographically).
             tcs = [
                 ToolCall(
                     id=v["id"],
                     name=v["name"],
                     arguments=parse_arguments(v["arguments"]),
                 )
-                for v in sorted(tool_calls_by_idx.values(), key=lambda x: x["id"])
+                for _idx, v in sorted(tool_calls_by_idx.items())
             ]
         return ChatResponse(content=content, tool_calls=tcs)

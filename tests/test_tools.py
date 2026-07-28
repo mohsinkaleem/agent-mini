@@ -238,3 +238,44 @@ async def test_web_search_returns_results(executor: ToolExecutor):
     with patch.object(executor._http, "post", return_value=mock_response):
         result = await executor.execute("web_search", {"query": "test query"})
     assert isinstance(result, str)
+
+
+# ------------------------------------------------------------------
+# SSRF guard on web_fetch
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_blocks_localhost(executor: ToolExecutor):
+    result = await executor.execute("web_fetch", {"url": "http://localhost:8080/admin"})
+    assert "Error" in result
+    assert "loopback" in result.lower() or "private" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_blocks_cloud_metadata(executor: ToolExecutor):
+    """169.254.169.254 is the AWS/GCP metadata endpoint."""
+    result = await executor.execute("web_fetch", {"url": "http://169.254.169.254/latest/meta-data/"})
+    assert "Error" in result
+    assert "link-local" in result.lower() or "private" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_blocks_rfc1918(executor: ToolExecutor):
+    result = await executor.execute("web_fetch", {"url": "http://192.168.1.1/"})
+    assert "Error" in result
+    assert "private" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_blocks_non_http_scheme(executor: ToolExecutor):
+    result = await executor.execute("web_fetch", {"url": "file:///etc/passwd"})
+    assert "Error" in result
+    assert "scheme" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_blocks_ipv6_loopback(executor: ToolExecutor):
+    result = await executor.execute("web_fetch", {"url": "http://[::1]/"})
+    assert "Error" in result
+

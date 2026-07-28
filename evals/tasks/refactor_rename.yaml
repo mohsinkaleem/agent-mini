@@ -1,0 +1,15 @@
+id: refactor_rename
+category: refactor
+setup: fixtures/py_project
+timeout_seconds: 240
+prompt: |
+  Rename the function `calc` to `compute` in this workspace. Update ALL
+  Python files, including call sites and imports. When you are done, run
+  `python -m pytest -q` and confirm the tests pass.
+checks:
+  - shell: "! grep -rq 'def calc(' src tests"
+    description: "No `def calc(` remains"
+  - shell: "grep -rq 'def compute(' src"
+    description: "`def compute(` exists in src"
+  - shell: "python -m pytest -q"
+    description: "pytest passes"

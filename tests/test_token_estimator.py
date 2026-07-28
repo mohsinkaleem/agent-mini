@@ -73,6 +73,10 @@ class TestClassifyModelTier:
             ("gemini-2.0-flash", "cloud"),
             ("gpt-4o-mini", "cloud"),
             ("gpt-4.1-mini", "cloud"),
+            # P4: large sizes must not fall through to small.
+            ("llama3.1:70b", "cloud"),
+            ("qwen2.5:32b", "cloud"),
+            ("mixtral:8x7b", "cloud"),
             ("unknown-model", "small"),  # default
         ],
     )

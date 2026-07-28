@@ -97,15 +97,16 @@ class TelegramChannel(BaseChannel):
                     async def _flush(force: bool = False) -> None:
                         preview = "".join(buffer)[:4000] or "..."
                         now = time.monotonic()
-                        if (
-                            not force
-                            and preview == last_state["text"]
-                            or (
-                                not force
-                                and now - last_state["t"] < 0.7
-                                and len(preview) - len(last_state["text"]) < 80
-                            )
-                        ):
+                        # Skip flushing if nothing meaningful changed, or if
+                        # we're within the debounce window with only a small
+                        # delta. Named conditions to avoid the and/or
+                        # precedence trap the original expression had.
+                        unchanged = preview == last_state["text"]
+                        too_soon = (
+                            now - last_state["t"] < 0.7
+                            and len(preview) - len(last_state["text"]) < 80
+                        )
+                        if not force and (unchanged or too_soon):
                             return
                         async with lock:
                             if preview == last_state["text"]:

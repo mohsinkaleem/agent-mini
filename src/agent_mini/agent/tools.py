@@ -1,15 +1,17 @@
-""" ""Built-in agent tools — shell, files, web search/fetch, memory."""
+"""Built-in agent tools — shell, files, web search/fetch, memory."""
 
 from __future__ import annotations
 
 import asyncio
 import importlib.util
+import ipaddress
 import logging
 import re
 import shutil
+import socket
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -201,6 +203,53 @@ def _html_to_text(html: str) -> str:
     parser = _HTMLToText()
     parser.feed(html)
     return parser.get_text()
+
+
+def _check_url_ssrf(url: str) -> str | None:
+    """Return an error string if *url* targets a private/loopback host.
+
+    Cheap SSRF guard for web_fetch — blocks the common attack surface
+    (localhost, RFC-1918, link-local, cloud metadata endpoints) without
+    trying to be a full-blown proxy filter. Only ``http(s)`` allowed.
+    Returns ``None`` when the URL passes the checks.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "invalid URL"
+
+    if parsed.scheme not in ("http", "https"):
+        return f"scheme '{parsed.scheme or '?'}' is not allowed (use http/https)"
+
+    host = parsed.hostname
+    if not host:
+        return "URL missing hostname"
+
+    # Fast path: literal IP address
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return f"host {host} is a private/loopback/link-local address"
+        return None
+    except ValueError:
+        pass
+
+    # DNS resolution — check every A/AAAA record so a hostname pointing
+    # into RFC-1918 is caught.
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as e:
+        return f"cannot resolve host {host}: {e}"
+
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return f"host {host} resolves to private/loopback address {addr}"
+    return None
 
 
 def _parse_ddg_html(html: str) -> list[dict[str, str]]:
@@ -555,7 +604,17 @@ class ToolExecutor:
         return "\n\n".join(lines)
 
     async def _web_fetch(self, url: str) -> str:
-        """Fetch a URL and return readable text content."""
+        """Fetch a URL and return readable text content.
+
+        Blocks requests to private/loopback/link-local addresses to guard
+        against SSRF (e.g. cloud metadata at 169.254.169.254, localhost
+        services, RFC-1918 nets). Best-effort — a determined attacker with
+        DNS rebinding can still bypass, but this stops the common cases.
+        """
+        blocked = _check_url_ssrf(url)
+        if blocked:
+            return f"Error: {blocked}"
+
         headers = {
             "User-Agent": self._BROWSER_UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -563,6 +622,10 @@ class ToolExecutor:
         resp = await self._http.get(
             url, headers=headers, follow_redirects=True, timeout=20
         )
+        # Re-check the final URL in case a redirect landed on a private host.
+        final_blocked = _check_url_ssrf(str(resp.url))
+        if final_blocked:
+            return f"Error: {final_blocked} (after redirect)"
         resp.raise_for_status()
 
         content_type = resp.headers.get("content-type", "").lower()

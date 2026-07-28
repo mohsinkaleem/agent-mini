@@ -36,3 +36,4 @@ config.json
 .ruff_cache/
 
 archived
+evals/results

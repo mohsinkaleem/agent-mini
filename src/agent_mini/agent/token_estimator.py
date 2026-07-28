@@ -39,15 +39,22 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
 
 # ── Model tier classification ────────────────────────────────────────
 
+# Ordered from most-specific to least. The `(?<![\d.])` lookbehind
+# anchors size suffixes so `8b` in ``1.5:8b`` matches but `5b` in
+# ``1.5b`` does not (the preceding char is `.`). This is what lets us
+# handle size suffixes on versioned names like ``llama3.1:70b`` without
+# the version's own digits being mis-read as a size.
 _TIER_PATTERNS: list[tuple[str, str]] = [
     # Cloud / API models
     (r"gemini|gpt-4|gpt-3\.5|claude|deepseek-v[23]", "cloud"),
+    # Large open-weight (treated as cloud for context/iteration budgets)
+    (r"(?<![\d.])(?:32|34|40|65|70|72|8x7|8x22)b\b", "cloud"),
     # Medium (9-14B)
-    (r"14b|12b|13b|nemo", "medium"),
+    (r"(?<![\d.])(?:9|10|11|12|13|14)b\b|nemo", "medium"),
     # Small (4-8B)
-    (r"[78]b|:7b|:8b|mistral(?!.*nemo)", "small"),
-    # Tiny (1-3B)
-    (r"[123]\.?\d*b|:1b|:3b|phi-4-mini|gemma3?:1b", "tiny"),
+    (r"(?<![\d.])[4-8]b\b|mistral(?!.*nemo)", "small"),
+    # Tiny (1-3B, with optional decimal like 1.5b)
+    (r"(?<![\d.])[1-3](?:\.\d+)?b\b|phi-4-mini|gemma3?:1b", "tiny"),
 ]
 
 

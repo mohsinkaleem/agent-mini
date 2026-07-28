@@ -213,13 +213,34 @@ def init():
 @click.option("-v", "--verbose", is_flag=True, help="Show debug logs.")
 @click.option("--no-markdown", is_flag=True, help="Plain-text output.")
 @click.option("-s", "--session", default=None, help="Resume a session by ID.")
-def chat(message: str | None, verbose: bool, no_markdown: bool, session: str | None):
+@click.option(
+    "--workspace",
+    default=None,
+    help="Override workspace directory for this run (isolates eval / one-shot tasks).",
+)
+def chat(
+    message: str | None,
+    verbose: bool,
+    no_markdown: bool,
+    session: str | None,
+    workspace: str | None,
+):
     """Chat with the agent."""
     _setup_logging(verbose)
     config = load_config()
     if not config:
         console.print("[red]No config found. Run 'agent-mini init' first.[/red]")
         raise SystemExit(1)
+    # CLI --workspace or AGENT_MINI_WORKSPACE env var overrides config,
+    # so callers (eval runner, scripts) can pin an isolated sandbox
+    # without touching ~/.agent-mini/config.json.
+    import os
+    override = workspace or os.environ.get("AGENT_MINI_WORKSPACE")
+    if override:
+        config["workspace"] = override
+        # Force restrictToWorkspace when an override is provided so the
+        # agent stays inside the isolated dir.
+        config.setdefault("tools", {})["restrictToWorkspace"] = True
     asyncio.run(_chat(config, message, no_markdown, session))
 
 
