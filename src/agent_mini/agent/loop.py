@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import random
+import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
@@ -39,6 +40,7 @@ class ToolEvent:
     arguments: dict | None = None
     result_preview: str | None = None
     is_error: bool = False
+    duration: float = 0.0
 
 
 ToolEventCallback = Callable[[ToolEvent], Awaitable[None]]
@@ -98,13 +100,13 @@ class AgentLoop:
         turns) so the caller can maintain session state.
         When *on_stream* is provided, partial text deltas are emitted in real time.
         """
+        tool_defs = self.tools.get_tool_defs()
         system_prompt = build_system_prompt(
             self.config,
             self.memory,
             model_name=self._model_name,
-            tool_defs=self.tools.get_tool_defs(),
+            tool_defs=tool_defs,
         )
-        tool_defs = self.tools.get_tool_defs()
 
         # Reset per-turn usage tracking
         self.turn_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -177,21 +179,23 @@ class AgentLoop:
 
             # Execute all tool calls concurrently
             async def _exec(tc):
-                log.info(
-                    "🔧 %s(%s)",
+                log.debug(
+                    "tool call: %s(%s)",
                     tc.name,
                     json.dumps(tc.arguments, ensure_ascii=False)[:200],
                 )
                 if on_tool_event:
                     await on_tool_event(ToolEvent(name=tc.name, arguments=tc.arguments))
+                started = time.monotonic()
                 result = await self.tools.execute(tc.name, tc.arguments)
-                log.debug("   → %s", result[:300])
+                elapsed = time.monotonic() - started
+                log.debug("   → (%.2fs) %s", elapsed, result[:300])
                 if on_tool_event:
-                    preview = result[:200]
                     await on_tool_event(ToolEvent(
                         name=tc.name,
-                        result_preview=preview,
+                        result_preview=result[:200],
                         is_error=result.startswith("Error:"),
+                        duration=elapsed,
                     ))
                 return tc, result
 

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+from urllib.parse import quote
 
 import pytest
 
@@ -227,17 +228,55 @@ async def test_list_directory_uses_text_prefixes(executor: ToolExecutor, workspa
 
 
 @pytest.mark.asyncio
-async def test_web_search_returns_results(executor: ToolExecutor):
-    """web_search should handle empty results gracefully."""
-    # We can't test actual DDG, but we test the tool doesn't crash
-
+async def test_web_search_parses_lite_results(executor: ToolExecutor):
+    """A well-formed lite response should yield title/url/snippet lines."""
+    target = quote("https://example.com/btc", safe="")
     mock_response = AsyncMock()
-    mock_response.text = "<html><body>No results</body></html>"
-    mock_response.raise_for_status = lambda: None
+    mock_response.status_code = 200
+    mock_response.text = (
+        f"<table><tr><td><a rel='nofollow' href='//duckduckgo.com/l/?uddg={target}' "
+        "class='result-link'>Bitcoin &amp; USD</a></td></tr>"
+        "<tr><td class='result-snippet'>Live price</td></tr></table>"
+    )
+
+    with patch.object(executor._http, "post", return_value=mock_response):
+        result = await executor.execute("web_search", {"query": "bitcoin"})
+
+    assert "Bitcoin & USD" in result
+    assert "https://example.com/btc" in result
+    assert "Live price" in result
+
+
+@pytest.mark.asyncio
+async def test_web_search_reports_blocked_page_as_error(executor: ToolExecutor):
+    """A rate-limit/challenge page must surface as an Error, not 'no results'.
+
+    Returning a bland 'No results found.' made small models retry the same
+    query until they exhausted max_iterations.
+    """
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.text = "<html><body><div class='anomaly-modal'>…</div></body></html>"
 
     with patch.object(executor._http, "post", return_value=mock_response):
         result = await executor.execute("web_search", {"query": "test query"})
-    assert isinstance(result, str)
+
+    assert result.startswith("Error:")
+    assert "Do NOT retry" in result
+
+
+@pytest.mark.asyncio
+async def test_web_search_reports_genuine_empty_results(executor: ToolExecutor):
+    """A rendered page with zero hits is not an error."""
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+    mock_response.text = "<html><body>No results found for that query.</body></html>"
+
+    with patch.object(executor._http, "post", return_value=mock_response):
+        result = await executor.execute("web_search", {"query": "zzzqqq"})
+
+    assert not result.startswith("Error:")
+    assert "No results found" in result
 
 
 # ------------------------------------------------------------------

@@ -60,19 +60,35 @@ class Memory:
     # ------------------------------------------------------------------
 
     def _load(self) -> None:
-        if self.filepath.exists():
+        if not self.filepath.exists():
+            return
+        try:
+            self._data = json.loads(self.filepath.read_text())
+        except json.JSONDecodeError:
+            # Keep the bad file around instead of silently overwriting it —
+            # the next _save() would otherwise destroy recoverable data.
+            backup = self.filepath.with_suffix(self.filepath.suffix + ".corrupt")
             try:
-                self._data = json.loads(self.filepath.read_text())
-            except json.JSONDecodeError:
+                self.filepath.replace(backup)
+                log.warning(
+                    "Corrupted memory file, moved to %s and started fresh", backup
+                )
+            except OSError:
                 log.warning("Corrupted memory file %s, starting fresh", self.filepath)
-                self._data = []
-            except OSError as e:
-                log.error("Cannot read memory file %s: %s", self.filepath, e)
-                self._data = []
+            self._data = []
+        except OSError as e:
+            log.error("Cannot read memory file %s: %s", self.filepath, e)
+            self._data = []
 
     def _save(self) -> None:
-        self.filepath.parent.mkdir(parents=True, exist_ok=True)
-        self.filepath.write_text(json.dumps(self._data, indent=2, ensure_ascii=False))
+        """Write atomically so an interrupted run cannot corrupt the store."""
+        try:
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.filepath.with_suffix(self.filepath.suffix + ".tmp")
+            tmp.write_text(json.dumps(self._data, indent=2, ensure_ascii=False))
+            tmp.replace(self.filepath)
+        except OSError as e:
+            log.error("Cannot write memory file %s: %s", self.filepath, e)
 
     # ------------------------------------------------------------------
     # Public API (called by tools)

@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -34,14 +38,37 @@ from .sessions import (
 
 console = Console()
 
+# Third-party loggers that would otherwise spam the chat UI with one line
+# per HTTP request. Only unmuted with --verbose.
+_NOISY_LOGGERS = ("httpx", "httpcore", "urllib3", "asyncio", "telegram", "httpcore.http11")
+
 
 def _setup_logging(verbose: bool = False) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
+    """Route logs through Rich so they blend with the chat UI.
+
+    Only ``agent-mini``'s own logger is chatty by default; everything else
+    is muted below WARNING so the transcript stays readable.
+    """
     logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        datefmt="%H:%M:%S",
+        level=logging.DEBUG if verbose else logging.WARNING,
+        format="%(message)s",
+        handlers=[
+            RichHandler(
+                console=console,
+                show_time=verbose,
+                show_path=verbose,
+                markup=False,
+                rich_tracebacks=True,
+            )
+        ],
+        force=True,
     )
+    logging.getLogger("agent-mini").setLevel(
+        logging.DEBUG if verbose else logging.INFO
+    )
+    if not verbose:
+        for name in _NOISY_LOGGERS:
+            logging.getLogger(name).setLevel(logging.WARNING)
 
 
 # ======================================================================
@@ -234,7 +261,6 @@ def chat(
     # CLI --workspace or AGENT_MINI_WORKSPACE env var overrides config,
     # so callers (eval runner, scripts) can pin an isolated sandbox
     # without touching ~/.agent-mini/config.json.
-    import os
     override = workspace or os.environ.get("AGENT_MINI_WORKSPACE")
     if override:
         config["workspace"] = override
@@ -242,6 +268,41 @@ def chat(
         # agent stays inside the isolated dir.
         config.setdefault("tools", {})["restrictToWorkspace"] = True
     asyncio.run(_chat(config, message, no_markdown, session))
+
+
+def _one_line(text: str, limit: int) -> str:
+    """Collapse whitespace, escape Rich markup, and clip *text* to *limit* chars.
+
+    Tool output routinely contains square brackets (``[dir]``, log lines,
+    JSON) which Rich would otherwise swallow as style tags.
+    """
+    flat = " ".join(text.split())
+    if len(flat) > limit:
+        flat = flat[: limit - 1] + "…"
+    return escape(flat)
+
+
+def _format_tool_args(arguments: dict) -> str:
+    """Render tool arguments as compact ``key=value`` pairs.
+
+    Raw JSON is hard to scan in a terminal; this keeps the signal
+    (which file, which query) and drops the punctuation.
+    """
+    parts = []
+    for key, value in arguments.items():
+        raw = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        parts.append(f"{key}={_one_line(raw, 60)}")
+    return "  ".join(parts)
+
+
+# Tool results are Markdown (web_search emits **bold** titles); the preview
+# line is plain text, so the syntax is just noise.
+_MD_NOISE = re.compile(r"\*\*|__|`+|^\s*#{1,6}\s*", re.MULTILINE)
+
+
+def _format_tool_result(preview: str) -> str:
+    """Render a tool result preview as a single clean line."""
+    return _one_line(_MD_NOISE.sub("", preview), 96)
 
 
 async def _chat(config: dict, message: str | None, plain: bool, session_id: str | None) -> None:
@@ -267,22 +328,41 @@ async def _chat(config: dict, message: str | None, plain: bool, session_id: str 
 
     # Track tool timing and turn timing
     turn_start = 0.0
+    # Active spinner for the current turn, so tool events can relabel it.
+    active_status = None
 
     # Tool event callback for visualization
     async def _on_tool_event(event: ToolEvent) -> None:
         if event.arguments is not None:
             # Tool call start
-            args_preview = json.dumps(event.arguments, ensure_ascii=False)[:120]
             console.print(
-                f"  [dim cyan]⚡[/dim cyan] [bold dim]{event.name}[/bold dim][dim]({args_preview})[/dim]"
+                f"  [cyan]⚡[/cyan] [bold]{event.name}[/bold] "
+                f"[dim]{_format_tool_args(event.arguments)}[/dim]"
             )
+            if active_status:
+                active_status.update(f"[dim]Running {event.name}…[/dim]")
         elif event.result_preview is not None:
             # Tool call result
+            timing = f" [dim]({event.duration:.1f}s)[/dim]" if event.duration >= 0.1 else ""
+            preview = _format_tool_result(event.result_preview)
             if event.is_error:
-                console.print(f"    [red]✗ Error:[/red] [dim red]{event.result_preview[:120]}[/dim red]")
+                console.print(f"    [red]✗[/red] [red]{preview}[/red]{timing}")
             else:
-                preview = event.result_preview.replace("\n", " ")[:100]
-                console.print(f"    [green]✓[/green] [dim]{preview}[/dim]")
+                console.print(f"    [green]✓[/green] [dim]{preview}[/dim]{timing}")
+            if active_status:
+                active_status.update("[dim]Thinking…[/dim]")
+
+    async def _run_turn(text: str) -> str:
+        """Run one agent turn with a live spinner so the REPL never looks dead."""
+        nonlocal active_status
+        active_status = console.status("[dim]Thinking…[/dim]", spinner="dots")
+        try:
+            with active_status:
+                return await agent.run(
+                    text, conversation, on_tool_event=_on_tool_event
+                )
+        finally:
+            active_status = None
 
     try:
         # Display styled header
@@ -295,10 +375,7 @@ async def _chat(config: dict, message: str | None, plain: bool, session_id: str 
         console.print(Panel(header, border_style="dim green", padding=(0, 1)))
 
         if message:
-            with console.status("[dim]Thinking…[/dim]", spinner="dots"):
-                response = await agent.run(
-                    message, conversation, on_tool_event=_on_tool_event
-                )
+            response = await _run_turn(message)
             _render(response, plain)
             return
 
@@ -329,9 +406,12 @@ async def _chat(config: dict, message: str | None, plain: bool, session_id: str 
                     continue
 
             turn_start = time.monotonic()
-            response = await agent.run(
-                user_input, conversation, on_tool_event=_on_tool_event
-            )
+            try:
+                response = await _run_turn(user_input)
+            except KeyboardInterrupt:
+                # Cancel the turn, not the session.
+                console.print("\n[yellow]Interrupted.[/yellow]\n")
+                continue
             turn_elapsed = time.monotonic() - turn_start
 
             # Auto-save session after each turn
@@ -343,9 +423,8 @@ async def _chat(config: dict, message: str | None, plain: bool, session_id: str 
             info_parts = []
             if agent.turn_usage["total_tokens"] > 0:
                 u = agent.turn_usage
-                info_parts.append(
-                    f"{u['prompt_tokens']}→ {u['completion_tokens']}← ({u['total_tokens']} total)"
-                )
+                info_parts.append(f"{u['prompt_tokens']:,} in")
+                info_parts.append(f"{u['completion_tokens']:,} out")
             info_parts.append(f"{turn_elapsed:.1f}s")
             console.print(f"[dim]  {'  •  '.join(info_parts)}[/dim]")
             console.print()

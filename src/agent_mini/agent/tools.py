@@ -9,6 +9,7 @@ import logging
 import re
 import shutil
 import socket
+from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -140,6 +141,10 @@ class _HTMLToText(HTMLParser):
     """Minimal HTML → readable text converter using stdlib only."""
 
     _SKIP_TAGS = frozenset({"script", "style", "noscript", "svg", "head"})
+    _BLOCK_TAGS = frozenset({
+        "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+        "li", "tr", "blockquote", "section", "article",
+    })
 
     def __init__(self) -> None:
         super().__init__()
@@ -149,42 +154,13 @@ class _HTMLToText(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list) -> None:
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
-        if tag in (
-            "br",
-            "p",
-            "div",
-            "h1",
-            "h2",
-            "h3",
-            "h4",
-            "h5",
-            "h6",
-            "li",
-            "tr",
-            "blockquote",
-            "section",
-            "article",
-        ):
+        if tag == "br" or tag in self._BLOCK_TAGS:
             self._parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in self._SKIP_TAGS and self._skip_depth > 0:
             self._skip_depth -= 1
-        if tag in (
-            "p",
-            "div",
-            "h1",
-            "h2",
-            "h3",
-            "h4",
-            "h5",
-            "h6",
-            "li",
-            "tr",
-            "blockquote",
-            "section",
-            "article",
-        ):
+        if tag in self._BLOCK_TAGS:
             self._parts.append("\n")
 
     def handle_data(self, data: str) -> None:
@@ -252,60 +228,111 @@ def _check_url_ssrf(url: str) -> str | None:
     return None
 
 
-def _parse_ddg_html(html: str) -> list[dict[str, str]]:
-    """Parse DuckDuckGo HTML search results into structured results."""
-    results: list[dict[str, str]] = []
+def _strip_tags(fragment: str) -> str:
+    """Strip HTML tags and decode entities from a small fragment."""
+    return unescape(re.sub(r"<[^>]+>", "", fragment)).strip()
 
-    # DuckDuckGo HTML results have <a class="result__a"> for titles/URLs
-    # and <a class="result__snippet"> for descriptions.
-    # We use regex for reliability — no extra dependencies.
+
+def _unwrap_ddg_url(raw: str) -> str:
+    """DuckDuckGo wraps result links in a redirect — pull out the real URL."""
+    match = re.search(r"[?&]uddg=([^&]+)", raw)
+    return unquote(match.group(1)) if match else unescape(raw)
+
+
+def _is_external(url: str) -> bool:
+    """True when *url* is a real result rather than a DuckDuckGo internal link."""
+    return url.startswith("http") and "duckduckgo.com" not in url
+
+
+def _parse_ddg_html(page: str) -> list[dict[str, str]]:
+    """Parse results from the html.duckduckgo.com endpoint (div markup)."""
     blocks = re.findall(
         r'<div[^>]*class="[^"]*result[_ ]results_links[^"]*"[^>]*>(.*?)</div>\s*</div>',
-        html,
+        page,
         re.DOTALL,
     )
     if not blocks:
-        # Fallback: try grabbing <a class="result__a"> directly
+        # Fallback: split on the per-result container class
         blocks = re.findall(
             r'<div[^>]*class="[^"]*links_main[^"]*"[^>]*>(.*?)(?=<div[^>]*class="[^"]*links_main|$)',
-            html,
+            page,
             re.DOTALL,
         )
 
+    results: list[dict[str, str]] = []
     for block in blocks:
-        # Extract URL from href in result__a or result-link
         url_match = re.search(r'href="([^"]+)"', block)
+        if not url_match:
+            continue
+        url = _unwrap_ddg_url(url_match.group(1))
+        if not _is_external(url):
+            continue
+
         title_match = re.search(
             r'class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL
         )
         snippet_match = re.search(
             r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</[at]>', block, re.DOTALL
         )
-
-        if not url_match:
-            continue
-
-        raw_url = url_match.group(1)
-        # DuckDuckGo wraps URLs in a redirect — extract the real one
-        uddg_match = re.search(r"[?&]uddg=([^&]+)", raw_url)
-        url = unquote(uddg_match.group(1)) if uddg_match else raw_url
-
-        # Skip DuckDuckGo internal links
-        if url.startswith("/") or "duckduckgo.com" in url:
-            continue
-
-        title = (
-            re.sub(r"<[^>]+>", "", title_match.group(1)).strip() if title_match else url
-        )
-        snippet = (
-            re.sub(r"<[^>]+>", "", snippet_match.group(1)).strip()
-            if snippet_match
-            else ""
-        )
-
-        results.append({"title": title, "url": url, "snippet": snippet})
-
+        results.append({
+            "title": _strip_tags(title_match.group(1)) if title_match else url,
+            "url": url,
+            "snippet": _strip_tags(snippet_match.group(1)) if snippet_match else "",
+        })
     return results[:8]
+
+
+def _parse_ddg_lite(page: str) -> list[dict[str, str]]:
+    """Parse results from the lite.duckduckgo.com endpoint (table markup)."""
+    anchors = re.findall(
+        r"<a\b([^>]*class=['\"]?result-link['\"]?[^>]*)>(.*?)</a>",
+        page,
+        re.DOTALL | re.IGNORECASE,
+    )
+    snippets = re.findall(
+        r"class=['\"]?result-snippet['\"]?[^>]*>(.*?)</td>",
+        page,
+        re.DOTALL | re.IGNORECASE,
+    )
+
+    results: list[dict[str, str]] = []
+    for index, (attrs, title_html) in enumerate(anchors):
+        href = re.search(r"href=['\"]([^'\"]+)", attrs)
+        if not href:
+            continue
+        url = _unwrap_ddg_url(href.group(1))
+        if not _is_external(url):
+            continue
+        results.append({
+            "title": _strip_tags(title_html) or url,
+            "url": url,
+            "snippet": _strip_tags(snippets[index]) if index < len(snippets) else "",
+        })
+    return results[:8]
+
+
+# Markers DuckDuckGo serves instead of results when it rate-limits or
+# challenges the client (common behind corporate proxies and VPNs).
+_DDG_BLOCK_MARKERS = (
+    "anomaly-modal",
+    "unfortunately, bots use duckduckgo",
+    "detected unusual activity",
+    "challenge-form",
+    "please try again later",
+)
+
+# Markers that mean "the page rendered fine, the query just had no hits".
+_DDG_EMPTY_MARKERS = ("no results", "not many great matches")
+
+
+def _classify_ddg_page(page: str) -> str:
+    """Return ``blocked``, ``empty`` or ``ok`` for a DuckDuckGo response body."""
+    head = page[:8000].lower()
+    if any(marker in head for marker in _DDG_BLOCK_MARKERS):
+        return "blocked"
+    if any(marker in head for marker in _DDG_EMPTY_MARKERS):
+        return "empty"
+    return "ok"
 
 
 # ======================================================================
@@ -577,31 +604,70 @@ class ToolExecutor:
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 
+    # Tried in order — the lite endpoint is smaller and survives rate
+    # limiting more often than the full HTML one.
+    _DDG_ENDPOINTS = (
+        ("https://lite.duckduckgo.com/lite/", _parse_ddg_lite),
+        ("https://html.duckduckgo.com/html/", _parse_ddg_html),
+    )
+
     async def _web_search(self, query: str) -> str:
-        """Search via DuckDuckGo HTML — free, no API key required."""
-        resp = await self._http.post(
-            "https://html.duckduckgo.com/html/",
-            data={"q": query},
-            headers={
-                "User-Agent": self._BROWSER_UA,
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            follow_redirects=True,
-            timeout=15,
+        """Search via DuckDuckGo HTML — free, no API key required.
+
+        Failures return an ``Error:`` string that names the cause and tells
+        the model not to retry, otherwise small models loop on the same
+        query until they burn through max_iterations.
+        """
+        failures: list[str] = []
+
+        for url, parser in self._DDG_ENDPOINTS:
+            host = urlparse(url).hostname or url
+            try:
+                resp = await self._http.post(
+                    url,
+                    data={"q": query},
+                    headers={
+                        "User-Agent": self._BROWSER_UA,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    follow_redirects=True,
+                    timeout=15,
+                )
+            except httpx.HTTPError as e:
+                failures.append(f"{host}: {type(e).__name__}")
+                continue
+
+            if resp.status_code >= 400:
+                failures.append(f"{host}: HTTP {resp.status_code}")
+                continue
+
+            verdict = _classify_ddg_page(resp.text)
+            if verdict == "blocked":
+                failures.append(f"{host}: rate-limited or blocked by a network filter")
+                continue
+
+            results = parser(resp.text)
+            if results:
+                return "\n\n".join(
+                    f"**{r['title']}**\n{r['url']}"
+                    + (f"\n{r['snippet']}" if r["snippet"] else "")
+                    for r in results
+                )
+
+            if verdict == "empty":
+                return (
+                    f"No results found for '{query}'. "
+                    "Try different or broader keywords."
+                )
+            failures.append(f"{host}: response had no parsable results")
+
+        return (
+            f"Error: web_search is unavailable ({'; '.join(failures)}). "
+            "Do NOT retry this tool — it will keep failing. Either call "
+            "web_fetch on a specific URL you already know, or answer from "
+            "your own knowledge and tell the user the information may be "
+            "out of date."
         )
-        resp.raise_for_status()
-
-        results = _parse_ddg_html(resp.text)
-        if not results:
-            return "No results found."
-
-        lines: list[str] = []
-        for r in results:
-            entry = f"**{r['title']}**\n{r['url']}"
-            if r.get("snippet"):
-                entry += f"\n{r['snippet']}"
-            lines.append(entry)
-        return "\n\n".join(lines)
 
     async def _web_fetch(self, url: str) -> str:
         """Fetch a URL and return readable text content.
