@@ -21,7 +21,7 @@ uv run ruff check src/ tests/
 
 ## Project Principles
 
-- **Stay lean.** The core is ~3,500 LOC. Don't add frameworks, heavy abstractions, or dependencies unless absolutely necessary.
+- **Stay lean.** The core is under 5,000 lines. Don't add frameworks, heavy abstractions, or dependencies unless absolutely necessary.
 - **Zero-framework.** Pure `httpx` + `asyncio`. No LangChain, no LiteLLM, no abstractions-on-abstractions.
 - **One file, one job.** Each module has a clear, single responsibility.
 - **Tests are required.** Every new feature or bug fix needs a test in `tests/`.
@@ -73,7 +73,7 @@ Open an issue with:
 ```
 src/agent_mini/
 ├── cli.py              # CLI entry point (Click)
-├── config.py           # Typed config loading
+├── config.py           # Config loading
 ├── bus.py              # Multi-channel message routing
 ├── sessions.py         # Session persistence
 ├── agent/
@@ -86,8 +86,7 @@ src/agent_mini/
 ├── providers/
 │   ├── base.py         # Provider interface + tool call parsing
 │   ├── ollama.py       # Ollama provider
-│   ├── openai.py       # OpenAI provider
-│   └── local.py        # Any OpenAI-compatible endpoint
+│   └── local.py        # OpenAI and any OpenAI-compatible endpoint
 └── channels/
     ├── base.py         # Channel interface
     └── telegram.py     # Telegram bot channel

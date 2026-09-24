@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 
@@ -30,13 +29,18 @@ class TelegramChannel(BaseChannel):
         self._stream_responses = stream_responses
         self._app = None
         self._handler: MessageHandler | None = None
+        self._seen_users: set[str] = set()
 
     @property
     def name(self) -> str:
         return "telegram"
 
+    @property
+    def is_public(self) -> bool:
+        return not self._allow_from or "*" in self._allow_from
+
     def _is_allowed(self, user_id: str, username: str | None = None) -> bool:
-        if not self._allow_from or "*" in self._allow_from:
+        if self.is_public:
             return True
         if user_id in self._allow_from:
             return True
@@ -81,6 +85,12 @@ class TelegramChannel(BaseChannel):
             if not self._is_allowed(user_id, username):
                 log.debug("[telegram] Ignoring disallowed user %s", user_id)
                 return
+            if self.is_public and user_id not in self._seen_users:
+                self._seen_users.add(user_id)
+                log.warning(
+                    "[telegram] New user on public bot: id=%s username=%s",
+                    user_id, username or "-",
+                )
 
             text = update.message.text
             log.info("[telegram] %s: %s", username or user_id, text[:120])
@@ -91,45 +101,30 @@ class TelegramChannel(BaseChannel):
                 if self._stream_responses:
                     placeholder = await update.message.reply_text("...")
                     buffer: list[str] = []
-                    lock = asyncio.Lock()
-                    last_state = {"text": "...", "t": 0.0}
+                    shown = {"text": "...", "t": 0.0}
 
                     async def _flush(force: bool = False) -> None:
+                        # Telegram rate-limits edits, so at most one per 0.7 s.
                         preview = "".join(buffer)[:4000] or "..."
                         now = time.monotonic()
-                        # Skip flushing if nothing meaningful changed, or if
-                        # we're within the debounce window with only a small
-                        # delta. Named conditions to avoid the and/or
-                        # precedence trap the original expression had.
-                        unchanged = preview == last_state["text"]
-                        too_soon = (
-                            now - last_state["t"] < 0.7
-                            and len(preview) - len(last_state["text"]) < 80
-                        )
-                        if not force and (unchanged or too_soon):
+                        if preview == shown["text"] or (not force and now - shown["t"] < 0.7):
                             return
-                        async with lock:
-                            if preview == last_state["text"]:
-                                return
-                            try:
-                                await placeholder.edit_text(preview, parse_mode=None)
-                                last_state["text"] = preview
-                                last_state["t"] = now
-                            except BadRequest as e:
-                                if "message is not modified" not in str(e).lower():
-                                    raise
+                        shown.update(text=preview, t=now)
+                        try:
+                            await placeholder.edit_text(preview, parse_mode=None)
+                        except BadRequest as e:
+                            if "message is not modified" not in str(e).lower():
+                                raise
 
                     async def _emit(delta: str) -> None:
-                        if not delta:
-                            return
                         buffer.append(delta)
-                        await _flush(force=False)
+                        await _flush()
 
                     response = await self._handler("telegram", user_id, text, _emit)
                     await _flush(force=True)
 
                     chunks = self._chunk_text(response)
-                    if chunks[0] != last_state["text"]:
+                    if chunks[0] != shown["text"]:
                         await placeholder.edit_text(chunks[0], parse_mode=None)
                     for chunk in chunks[1:]:
                         await update.message.reply_text(chunk, parse_mode=None)
@@ -151,11 +146,6 @@ class TelegramChannel(BaseChannel):
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
-
-    async def send(self, user_id: str, text: str) -> None:
-        if self._app:
-            for chunk in self._chunk_text(text):
-                await self._app.bot.send_message(chat_id=int(user_id), text=chunk)
 
     async def stop(self) -> None:
         if self._app:

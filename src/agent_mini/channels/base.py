@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
-StreamEmitter = Callable[[str], Awaitable[None]]
+from ..providers.base import StreamCallback
 
-# (channel_name, user_id, text, stream_emitter?) → response text
-MessageHandler = Callable[[str, str, str, StreamEmitter | None], Awaitable[str]]
+# (channel_name, user_id, text, stream_callback?) → response text
+MessageHandler = Callable[[str, str, str, StreamCallback | None], Awaitable[str]]
 
 
 class BaseChannel(ABC):
@@ -17,11 +17,6 @@ class BaseChannel(ABC):
     @abstractmethod
     async def start(self, on_message: MessageHandler) -> None:
         """Start listening for incoming messages."""
-        ...
-
-    @abstractmethod
-    async def send(self, user_id: str, text: str) -> None:
-        """Proactively send a message to *user_id*."""
         ...
 
     @abstractmethod

@@ -10,6 +10,8 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from ..config import write_private
+
 log = logging.getLogger("agent-mini")
 
 # ---------- Minimal Porter-style stemmer (covers common suffixes) ----------
@@ -81,12 +83,9 @@ class Memory:
             self._data = []
 
     def _save(self) -> None:
-        """Write atomically so an interrupted run cannot corrupt the store."""
+        """Write atomically (0600) so an interrupted run cannot corrupt the store."""
         try:
-            self.filepath.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.filepath.with_suffix(self.filepath.suffix + ".tmp")
-            tmp.write_text(json.dumps(self._data, indent=2, ensure_ascii=False))
-            tmp.replace(self.filepath)
+            write_private(self.filepath, json.dumps(self._data, indent=2, ensure_ascii=False))
         except OSError as e:
             log.error("Cannot write memory file %s: %s", self.filepath, e)
 
@@ -95,17 +94,32 @@ class Memory:
     # ------------------------------------------------------------------
 
     def store(self, key: str, value: str) -> str:
-        """Store a key/value pair. Returns confirmation string."""
+        """Store a key/value pair, replacing any entry with the same key."""
         entry = {
             "key": key,
             "value": value,
             "timestamp": datetime.now().isoformat(),
         }
+        norm = key.strip().lower()
+        before = len(self._data)
+        self._data = [e for e in self._data if e["key"].strip().lower() != norm]
+        replaced = len(self._data) < before
         self._data.append(entry)
         if len(self._data) > self.max_entries:
             self._data = self._data[-self.max_entries :]
         self._save()
-        return f"Stored memory: {key}"
+        return f"{'Updated' if replaced else 'Stored'} memory: {key}"
+
+    def forget(self, key: str) -> str:
+        """Delete every entry whose key matches *key* (case-insensitive)."""
+        norm = key.strip().lower()
+        kept = [e for e in self._data if e["key"].strip().lower() != norm]
+        removed = len(self._data) - len(kept)
+        if not removed:
+            return f"No memory with key '{key}'."
+        self._data = kept
+        self._save()
+        return f"Forgot memory: {key}"
 
     def recall(self, query: str) -> str:
         """TF-IDF fuzzy search across stored memories."""

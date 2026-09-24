@@ -1,0 +1,17 @@
+id = "error_recovery"
+category = "error_recovery"
+timeout_seconds = 180
+prompt = """
+Read the file `does_not_exist.txt` in this workspace. When it fails,
+do NOT give up — instead, create the file with the content
+"recovered" and then read it back to confirm.
+"""
+
+[[checks]]
+description = "file was created after initial failure"
+shell = "test -f does_not_exist.txt"
+
+[[checks]]
+description = "file content is 'recovered'"
+shell = "cat does_not_exist.txt"
+expect_exact = "recovered"

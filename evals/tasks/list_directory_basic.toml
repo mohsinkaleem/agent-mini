@@ -1,0 +1,18 @@
+id = "list_directory_basic"
+category = "file_ops"
+timeout_seconds = 90
+prompt = """
+List the files in this workspace. Then create a file `filecount.txt`
+containing ONLY the number of files (not directories) present in the
+workspace root BEFORE you created `filecount.txt` itself. If the
+workspace was empty, the answer is `0`.
+"""
+
+[[checks]]
+description = "filecount.txt exists"
+shell = "test -f filecount.txt"
+
+[[checks]]
+description = "count is exactly 0 (fresh workspace)"
+shell = "cat filecount.txt"
+expect_exact = "0"

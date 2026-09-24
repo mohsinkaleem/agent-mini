@@ -10,6 +10,7 @@ Usage
     python evals/run.py                            # all tasks, config model
     python evals/run.py --task refactor_rename    # one task
     python evals/run.py --model llama3.2:3b       # override model
+    python evals/run.py --provider ollama --model qwen3:8b
     python evals/run.py --out results/small.json  # save JSON report
     python evals/run.py --compare results/*.json  # cross-tier table
 
@@ -17,25 +18,28 @@ Design
 ------
 - **Fixtures** are copied per-run to ``tempfile.mkdtemp()`` — never mutated in
   place, and always cleaned up on exit.
-- **Task file format** is a flat subset of YAML parsed by ``_parse_task`` (no
-  PyYAML dep). Only strings, ints, and lists of dicts are supported — that's
-  all we need.
+- **Task files** are TOML, parsed with stdlib ``tomllib``.
 - **Checks** are shell one-liners executed with ``cwd=workspace``. Non-zero
-  exit ⇒ failed check. Explicit ``expect_stdout`` / ``expect_no_stdout``
-  matchers are also supported for text assertions.
+  exit ⇒ failed check. ``{python}`` is replaced by the harness interpreter.
+  Matchers: ``expect_exact`` (stripped stdout equals), ``expect_regex``,
+  ``expect_stdout`` (substring), ``expect_no_stdout``. A task can also list
+  ``fixture_unchanged`` paths that the agent must not modify.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,6 +47,19 @@ EVALS_DIR = Path(__file__).parent
 TASKS_DIR = EVALS_DIR / "tasks"
 FIXTURES_DIR = EVALS_DIR / "fixtures"
 RESULTS_DIR = EVALS_DIR / "results"
+
+# Exit codes from `agent-mini chat -m` (see cli.py).
+_AGENT_EXIT_REASONS = {
+    2: "max_iterations",
+    3: "provider_error",
+    4: "stuck",
+    124: "timeout",
+    130: "cancelled",
+}
+
+# Agent settings copied from the user's config into the eval home; everything
+# else (system prompt, memory, plugins, sessions) stays out of the run.
+_COPIED_AGENT_KEYS = ("temperature", "tier", "contextWindow")
 
 # ─────────────────────────────────────────────────────────────────────
 # Data classes
@@ -54,6 +71,8 @@ class Check:
     """A single shell / stdout check applied after the agent finishes."""
     shell: str
     description: str = ""
+    expect_exact: str | None = None
+    expect_regex: str | None = None
     expect_stdout: str | None = None
     expect_no_stdout: str | None = None
 
@@ -66,6 +85,7 @@ class Task:
     setup: str | None = None
     timeout_seconds: int = 180
     checks: list[Check] = field(default_factory=list)
+    fixture_unchanged: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -79,123 +99,36 @@ class Result:
     agent_stdout: str
     workspace: str
     failure_reason: str = ""
+    metrics: dict = field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Tiny YAML subset parser
+# Task loading (TOML via stdlib tomllib)
 # ─────────────────────────────────────────────────────────────────────
-#
-# We only support the fixed schema below — no anchors, no flow style, no
-# nested dicts beyond one level of list-of-dicts. Keeping this in-tree
-# means the eval harness has ZERO third-party deps.
-#
-# Grammar (informal):
-#   file        = header block-scalar? key-value* checks-list?
-#   key-value   = KEY ":" (INLINE | BLOCK)
-#   BLOCK       = "|" NL indented-lines
-#   checks-list = "checks:" NL ( "-" (kv-line NL)+ )*
+
+_CHECK_FIELDS = set(Check.__dataclass_fields__)
 
 
 def _parse_task(path: Path) -> Task:
-    text = path.read_text()
-    lines = text.splitlines()
-    i = 0
-    data: dict = {}
-    n = len(lines)
-
-    def _strip_quotes(v: str) -> str:
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-            return v[1:-1]
-        return v
-
-    while i < n:
-        line = lines[i]
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            i += 1
-            continue
-
-        # Top-level list block: "checks:"
-        if stripped == "checks:":
-            i += 1
-            checks: list[dict] = []
-            current: dict | None = None
-            while i < n:
-                line_inner = lines[i]
-                if line_inner.strip() == "" or line_inner.strip().startswith("#"):
-                    i += 1
-                    continue
-                # Detect end of block: dedent to column 0 with content
-                if line_inner and not line_inner.startswith(" ") and not line_inner.startswith("\t"):
-                    break
-                s = line_inner.strip()
-                if s.startswith("- "):
-                    if current is not None:
-                        checks.append(current)
-                    current = {}
-                    kv = s[2:]
-                    if ":" in kv:
-                        k, _, v = kv.partition(":")
-                        current[k.strip()] = _strip_quotes(v)
-                elif current is not None and ":" in s:
-                    k, _, v = s.partition(":")
-                    current[k.strip()] = _strip_quotes(v)
-                i += 1
-            if current is not None:
-                checks.append(current)
-            data["checks"] = checks
-            continue
-
-        # Block scalar: "prompt: |"
-        if stripped.endswith(": |"):
-            key = stripped[:-3].strip()
-            i += 1
-            block: list[str] = []
-            base_indent: int | None = None
-            while i < n:
-                line_inner = lines[i]
-                if line_inner.strip() == "":
-                    block.append("")
-                    i += 1
-                    continue
-                indent = len(line_inner) - len(line_inner.lstrip(" "))
-                if base_indent is None:
-                    base_indent = indent
-                if indent < (base_indent or 1) and line_inner.strip():
-                    break
-                block.append(line_inner[base_indent:] if base_indent else line_inner)
-                i += 1
-            data[key] = "\n".join(block).rstrip()
-            continue
-
-        # Simple "key: value"
-        if ":" in stripped:
-            k, _, v = stripped.partition(":")
-            data[k.strip()] = _strip_quotes(v)
-        i += 1
-
+    data = tomllib.loads(path.read_text())
     if "id" not in data or "prompt" not in data:
         raise ValueError(f"{path}: task requires `id` and `prompt`")
 
     checks = []
-    for c in data.get("checks", []) or []:
-        checks.append(
-            Check(
-                shell=c.get("shell", ""),
-                description=c.get("description", ""),
-                expect_stdout=c.get("expect_stdout"),
-                expect_no_stdout=c.get("expect_no_stdout"),
-            )
-        )
+    for c in data.get("checks", []):
+        unknown = set(c) - _CHECK_FIELDS
+        if unknown:
+            raise ValueError(f"{path}: unknown check field(s) {sorted(unknown)}")
+        checks.append(Check(**c))
 
     return Task(
         id=str(data["id"]),
-        prompt=str(data["prompt"]),
+        prompt=str(data["prompt"]).strip(),
         category=str(data.get("category", "general")),
-        setup=(str(data["setup"]) if data.get("setup") else None),
-        timeout_seconds=int(data.get("timeout_seconds") or 180),
+        setup=data.get("setup") or None,
+        timeout_seconds=int(data.get("timeout_seconds", 180)),
         checks=checks,
+        fixture_unchanged=list(data.get("fixture_unchanged", [])),
     )
 
 
@@ -203,7 +136,7 @@ def load_tasks(only: str | None = None) -> list[Task]:
     if not TASKS_DIR.exists():
         return []
     tasks = []
-    for p in sorted(TASKS_DIR.glob("*.yaml")):
+    for p in sorted(TASKS_DIR.glob("*.toml")):
         try:
             t = _parse_task(p)
         except Exception as e:
@@ -235,14 +168,50 @@ def _prepare_workspace(task: Task) -> Path:
     return ws
 
 
-def _run_agent(prompt: str, workspace: Path, model: str | None, timeout: int) -> tuple[str, int]:
-    """Invoke ``agent-mini chat -m <prompt> --workspace <ws>``.
+def _prepare_home(workspace: Path) -> Path:
+    """Temp ``AGENT_MINI_HOME`` holding only the user's provider settings.
+
+    Keeps the user's memory, plugins, sessions and system prompt out of the
+    run, and keeps the run out of them.
+    """
+    home = Path(tempfile.mkdtemp(prefix="agent-mini-eval-home-"))
+    user_home = Path(os.environ.get("AGENT_MINI_HOME") or Path.home() / ".agent-mini").expanduser()
+    try:
+        user_cfg = json.loads((user_home / "config.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        user_cfg = {}
+    agent_cfg = user_cfg.get("agent", {})
+    config = {
+        "provider": user_cfg.get("provider", "ollama"),
+        "providers": user_cfg.get("providers", {}),
+        "agent": {k: agent_cfg[k] for k in _COPIED_AGENT_KEYS if k in agent_cfg},
+        "tools": {"sandboxLevel": "workspace"},
+        "memory": {"enabled": False},
+        "workspace": str(workspace),
+    }
+    path = home / "config.json"
+    path.write_text(json.dumps(config, indent=2))
+    path.chmod(0o600)  # may hold API keys
+    return home
+
+
+def _run_agent(
+    prompt: str,
+    workspace: Path,
+    provider: str | None,
+    model: str | None,
+    timeout: int,
+) -> tuple[str, int]:
+    """Invoke ``agent-mini chat -m <prompt> --workspace <ws> --yes``.
 
     Returns (combined stdout+stderr, exit code). ``AGENT_MINI_WORKSPACE`` is
-    set so any child process inherits the pinned workspace too.
+    set so any child process inherits the pinned workspace too, and
+    ``AGENT_MINI_HOME`` points at a throwaway home (see ``_prepare_home``).
     """
+    home = _prepare_home(workspace)
     env = os.environ.copy()
     env["AGENT_MINI_WORKSPACE"] = str(workspace)
+    env["AGENT_MINI_HOME"] = str(home)
     # Force color/markdown off for machine-parseable stdout.
     env["NO_COLOR"] = "1"
     env["TERM"] = "dumb"
@@ -252,14 +221,12 @@ def _run_agent(prompt: str, workspace: Path, model: str | None, timeout: int) ->
         "-m", prompt,
         "--workspace", str(workspace),
         "--no-markdown",
+        "--yes",
     ]
-    # Optional per-run model override via slash-command-style "-m/--model"
-    # would be nicer, but keep the CLI stable and use config for now unless
-    # the caller explicitly points to a Python override. We honour the
-    # --model flag by writing it into the env for the (optional) config
-    # loader to see; here we take the simpler route and just log it.
+    if provider:
+        cmd += ["--provider", provider]
     if model:
-        env["AGENT_MINI_MODEL"] = model  # cooperative — consumed by callers who care
+        cmd += ["--model", model]
 
     try:
         proc = subprocess.run(
@@ -277,13 +244,16 @@ def _run_agent(prompt: str, workspace: Path, model: str | None, timeout: int) ->
         if isinstance(out, bytes):
             out = out.decode(errors="replace")
         return f"[TIMEOUT after {timeout}s]\n{out}", 124
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
 
 
 def _run_check(check: Check, workspace: Path) -> tuple[bool, str]:
     """Execute a shell check inside *workspace*. Returns (passed, detail)."""
+    command = check.shell.replace("{python}", shlex.quote(sys.executable))
     try:
         proc = subprocess.run(
-            check.shell,
+            command,
             shell=True,
             cwd=str(workspace),
             capture_output=True,
@@ -294,29 +264,67 @@ def _run_check(check: Check, workspace: Path) -> tuple[bool, str]:
         return False, "check timed out after 60s"
 
     stdout = proc.stdout or ""
-    if check.expect_stdout is not None:
-        if check.expect_stdout not in stdout:
-            return False, f"stdout missing '{check.expect_stdout}'"
-    if check.expect_no_stdout is not None:
-        if check.expect_no_stdout in stdout:
-            return False, f"stdout unexpectedly contains '{check.expect_no_stdout}'"
     if proc.returncode != 0:
         return False, f"exit {proc.returncode}: {(proc.stderr or stdout)[:200]}"
+    if check.expect_exact is not None and stdout.strip() != check.expect_exact:
+        return False, f"expected exactly {check.expect_exact!r}, got {stdout.strip()[:100]!r}"
+    if check.expect_regex is not None and not re.search(check.expect_regex, stdout):
+        return False, f"stdout does not match /{check.expect_regex}/"
+    if check.expect_stdout is not None and check.expect_stdout not in stdout:
+        return False, f"stdout missing '{check.expect_stdout}'"
+    if check.expect_no_stdout is not None and check.expect_no_stdout in stdout:
+        return False, f"stdout unexpectedly contains '{check.expect_no_stdout}'"
     return True, ""
 
 
-def run_task(task: Task, model: str | None = None, keep_workspace: bool = False) -> Result:
+_HASH_SKIP_DIRS = {"__pycache__", ".pytest_cache"}
+
+
+def _hash_tree(path: Path) -> str:
+    """Content hash of a file or directory, ignoring caches that test runs create."""
+    h = hashlib.sha256()
+    if not path.exists():
+        return "missing"
+    files = [path] if path.is_file() else sorted(
+        p for p in path.rglob("*")
+        if p.is_file() and not _HASH_SKIP_DIRS.intersection(p.relative_to(path).parts)
+    )
+    for f in files:
+        h.update(str(f.relative_to(path) if f != path else f.name).encode())
+        h.update(f.read_bytes())
+    return h.hexdigest()
+
+
+def _check_fixture_unchanged(task: Task, workspace: Path) -> str:
+    """Return the first protected path the agent modified, or ''."""
+    if not task.setup:
+        return ""
+    src = (EVALS_DIR / task.setup).resolve()
+    for rel in task.fixture_unchanged:
+        if _hash_tree(src / rel) != _hash_tree(workspace / rel):
+            return rel
+    return ""
+
+
+def run_task(
+    task: Task,
+    provider: str | None = None,
+    model: str | None = None,
+    keep_workspace: bool = False,
+) -> Result:
     ws = _prepare_workspace(task)
     t0 = time.monotonic()
-    agent_out, agent_exit = _run_agent(task.prompt, ws, model, task.timeout_seconds)
+    agent_out, agent_exit = _run_agent(task.prompt, ws, provider, model, task.timeout_seconds)
     duration = time.monotonic() - t0
 
     checks_passed = 0
     failure_reason = ""
-    if agent_exit == 124:
-        failure_reason = "agent timed out"
-    elif agent_exit != 0:
-        failure_reason = f"agent exited {agent_exit}"
+    if agent_exit != 0:
+        failure_reason = _AGENT_EXIT_REASONS.get(agent_exit, f"agent exited {agent_exit}")
+
+    tampered = _check_fixture_unchanged(task, ws)
+    if tampered and not failure_reason:
+        failure_reason = f"fixture_tampered: {tampered}"
 
     for c in task.checks:
         ok, detail = _run_check(c, ws)
@@ -325,7 +333,7 @@ def run_task(task: Task, model: str | None = None, keep_workspace: bool = False)
         elif not failure_reason:
             failure_reason = f"{c.description or c.shell}: {detail}"
 
-    passed = agent_exit == 0 and checks_passed == len(task.checks)
+    passed = agent_exit == 0 and not tampered and checks_passed == len(task.checks)
 
     result = Result(
         task_id=task.id,
@@ -337,6 +345,7 @@ def run_task(task: Task, model: str | None = None, keep_workspace: bool = False)
         agent_stdout=agent_out[-4000:],  # trim to keep JSON small
         workspace=str(ws),
         failure_reason=failure_reason,
+        metrics=_agent_metrics(agent_out),
     )
 
     if not keep_workspace and not failure_reason:
@@ -360,7 +369,7 @@ def _format_table(results: list[Result]) -> str:
     rows = []
     header = (
         f"{'TASK'.ljust(id_w)}  {'CAT'.ljust(cat_w)}  "
-        f"{'RESULT':<7}  {'CHECKS':<9}  {'TIME':>7}  DETAIL"
+        f"{'RESULT':<7}  {'CHECKS':<9}  {'TIME':>7}  {'ITER':>4}  {'TOKENS':>7}  DETAIL"
     )
     rows.append(header)
     rows.append("-" * len(header))
@@ -370,7 +379,8 @@ def _format_table(results: list[Result]) -> str:
         detail = "" if r.passed else (r.failure_reason[:60] or "")
         rows.append(
             f"{r.task_id.ljust(id_w)}  {r.category.ljust(cat_w)}  "
-            f"{status:<7}  {checks:<9}  {r.duration_seconds:>6.1f}s  {detail}"
+            f"{status:<7}  {checks:<9}  {r.duration_seconds:>6.1f}s  "
+            f"{r.metrics.get('iterations', 0):>4}  {r.metrics.get('tokens', 0):>7,}  {detail}"
         )
     pass_n = sum(1 for r in results if r.passed)
     rows.append("-" * len(header))
@@ -379,19 +389,21 @@ def _format_table(results: list[Result]) -> str:
 
 
 def _agent_metrics(agent_stdout: str) -> dict:
-    """Extract lightweight metrics from the agent's stderr log."""
+    """Extract lightweight metrics from the agent's log and turn footer."""
     def _count(pattern: str) -> int:
         return len(re.findall(pattern, agent_stdout))
 
-    tokens_match = re.search(r"(\d+)→\s*(\d+)←\s*\((\d+)\s*total\)", agent_stdout)
-    tokens = int(tokens_match.group(3)) if tokens_match else 0
+    def _last_int(pattern: str) -> int:
+        found = re.findall(pattern, agent_stdout)
+        return int(found[-1].replace(",", "")) if found else 0
 
+    # Footer from `chat -m`: "N iterations  •  X in  •  Y out  •  T s"
     return {
-        "iterations": _count(r"iteration \d+"),
-        "json_repairs": _count(r"repair|Repaired"),
-        "summarize_hits": _count(r"summariz"),
-        "loop_nudges": _count(r"repeated the same tool call"),
-        "tokens": tokens,
+        "iterations": _last_int(r"(\d+) iterations?\s+•"),
+        "json_repairs": _count(r"Repaired malformed tool arguments"),
+        "text_tool_calls": _count(r"Recovered \d+ tool call"),
+        "loop_nudges": _count(r"Loop detected"),
+        "tokens": _last_int(r"([\d,]+) in\s+•") + _last_int(r"([\d,]+) out\s+•"),
     }
 
 
@@ -418,7 +430,7 @@ def _save_report(model: str, results: list[Result], out_path: Path | None) -> Pa
                 "checks_passed": r.checks_passed,
                 "checks_total": r.checks_total,
                 "failure_reason": r.failure_reason,
-                "metrics": _agent_metrics(r.agent_stdout),
+                "metrics": r.metrics,
                 "workspace": r.workspace if not r.passed else None,
             }
             for r in results
@@ -472,7 +484,8 @@ def _compare_reports(paths: list[Path]) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Agent Mini task-eval runner.")
     ap.add_argument("--task", help="Run only this task id.")
-    ap.add_argument("--model", help="Model name (informational; requires config to point here).")
+    ap.add_argument("--provider", help="Provider override passed to `agent-mini chat --provider`.")
+    ap.add_argument("--model", help="Model override passed to `agent-mini chat --model`.")
     ap.add_argument("--out", help="Path to write JSON report.")
     ap.add_argument("--keep-workspace", action="store_true",
                     help="Keep the temp workspace even when a task passes (for debugging).")
@@ -489,13 +502,17 @@ def main() -> int:
         print(f"No tasks found in {TASKS_DIR}", file=sys.stderr)
         return 1
 
-    model = args.model or os.environ.get("AGENT_MINI_MODEL") or "(config)"
+    model = args.model or "(config)"
+    if args.provider:
+        model = f"{args.provider}/{model}"
     print(f"Running {len(tasks)} task(s) against model={model}\n")
 
     results: list[Result] = []
     for t in tasks:
         print(f"→ {t.id} ({t.category}) ", end="", flush=True)
-        r = run_task(t, model=args.model, keep_workspace=args.keep_workspace)
+        r = run_task(
+            t, provider=args.provider, model=args.model, keep_workspace=args.keep_workspace
+        )
         results.append(r)
         print(f"[{ 'PASS' if r.passed else 'FAIL' }] {r.duration_seconds:.1f}s")
 

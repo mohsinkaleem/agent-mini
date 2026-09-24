@@ -1,7 +1,7 @@
 """Tests for JSON repair in parse_arguments (small-model tool call resilience)."""
 
 
-from agent_mini.providers.base import parse_arguments
+from agent_mini.providers.base import INVALID_ARGS_KEY, parse_arguments
 
 
 class TestParseArgumentsRepair:
@@ -32,8 +32,9 @@ class TestParseArgumentsRepair:
         assert parse_arguments("") == {}
 
     def test_completely_broken(self):
-        assert parse_arguments("not json at all {{{") == {}
+        # Flagged, not silently turned into {}, so the executor can tell the model.
+        assert parse_arguments("not json at all {{{") == {INVALID_ARGS_KEY: "not json at all {{{"}
 
     def test_non_dict_json(self):
         # A JSON array should not be accepted
-        assert parse_arguments("[1, 2, 3]") == {}
+        assert parse_arguments("[1, 2, 3]") == {INVALID_ARGS_KEY: "[1, 2, 3]"}

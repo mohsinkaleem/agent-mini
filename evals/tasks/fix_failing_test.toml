@@ -1,0 +1,15 @@
+id = "fix_failing_test"
+category = "multi_step"
+setup = "fixtures/buggy_stack"
+timeout_seconds = 240
+fixture_unchanged = ["tests"]
+prompt = """
+There is a Python project in this workspace with failing tests. Run
+`python -m pytest -q` to see the failures, find the bug in the source
+code, fix it, and re-run the tests to confirm they all pass. Do NOT
+modify the tests themselves — only the source code under `src/`.
+"""
+
+[[checks]]
+description = "tests pass after the fix"
+shell = "{python} -m pytest -q"

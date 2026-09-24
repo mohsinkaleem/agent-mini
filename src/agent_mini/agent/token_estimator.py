@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, replace
 
 
 def estimate_tokens(text: str) -> int:
@@ -39,74 +40,104 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
 
 # ── Model tier classification ────────────────────────────────────────
 
-# Ordered from most-specific to least. The `(?<![\d.])` lookbehind
-# anchors size suffixes so `8b` in ``1.5:8b`` matches but `5b` in
-# ``1.5b`` does not (the preceding char is `.`). This is what lets us
-# handle size suffixes on versioned names like ``llama3.1:70b`` without
-# the version's own digits being mis-read as a size.
-_TIER_PATTERNS: list[tuple[str, str]] = [
-    # Cloud / API models
-    (r"gemini|gpt-4|gpt-3\.5|claude|deepseek-v[23]", "cloud"),
-    # Large open-weight (treated as cloud for context/iteration budgets)
-    (r"(?<![\d.])(?:32|34|40|65|70|72|8x7|8x22)b\b", "cloud"),
-    # Medium (9-14B)
-    (r"(?<![\d.])(?:9|10|11|12|13|14)b\b|nemo", "medium"),
-    # Small (4-8B)
-    (r"(?<![\d.])[4-8]b\b|mistral(?!.*nemo)", "small"),
-    # Tiny (1-3B, with optional decimal like 1.5b)
-    (r"(?<![\d.])[1-3](?:\.\d+)?b\b|phi-4-mini|gemma3?:1b", "tiny"),
-]
+# Parameter count in the name: "8b", "0.6b", "8x7b" (MoE). The lookbehind
+# skips version digits ("qwen2.5") and active-param tags ("30b-a3b").
+_SIZE = re.compile(r"(?<![\w.])(?:(\d+)x)?(\d+(?:\.\d+)?)b(?![a-z0-9])")
+_SIZE_MILLIONS = re.compile(r"(?<![\w.])\d+m(?![a-z0-9])")
+_API = re.compile(r"^(?:gpt-|o\d|chatgpt|claude|gemini|grok|deepseek-(?:chat|reasoner|v\d))")
+# Well-known names that carry no size tag.
+_KNOWN_SIZELESS = (("phi-4-mini", "tiny"), ("phi4-mini", "tiny"), ("nemo", "medium"))
+
+TIERS = ("tiny", "small", "medium", "large", "cloud")
 
 
 def classify_model_tier(model_name: str) -> str:
-    """Classify a model name into tiny / small / medium / cloud."""
-    name = model_name.lower()
-    for pattern, tier in _TIER_PATTERNS:
-        if re.search(pattern, name):
-            return tier
-    return "small"  # safe default
+    """Classify a model name into tiny / small / medium / large / cloud."""
+    name = model_name.lower().rsplit("/", 1)[-1]
+    m = _SIZE.search(name)
+    if not m:
+        if _API.search(name):
+            return "cloud"
+        if _SIZE_MILLIONS.search(name):
+            return "tiny"
+        for key, tier in _KNOWN_SIZELESS:
+            if key in name:
+                return tier
+        return "small"  # safe default
+    size = float(m.group(2)) * (int(m.group(1)) if m.group(1) else 1)
+    return tier_for_size(size)
 
 
-# Effective context: the token count where accuracy stays high (~90%).
-_EFFECTIVE_CONTEXT = {
-    "tiny": 3000,
-    "small": 6000,
-    "medium": 12000,
-    "cloud": 32000,
+def tier_for_size(params_b: float) -> str:
+    """Tier for a parameter count in billions."""
+    if params_b < 4:
+        return "tiny"
+    if params_b < 9:
+        return "small"
+    if params_b < 20:
+        return "medium"
+    if params_b <= 72:
+        return "large"
+    return "cloud"
+
+
+@dataclass(frozen=True)
+class TierProfile:
+    """Budgets derived from the model tier."""
+
+    tier: str
+    context: int  # effective context: where accuracy stays high (~90%)
+    max_iterations: int
+    output_limit: int  # max chars for a single tool output
+    memory_items: int  # recent memories attached to the system prompt
+
+
+_PROFILES = {
+    "tiny": TierProfile("tiny", 3000, 10, 2000, 0),
+    "small": TierProfile("small", 6000, 15, 4000, 3),
+    "medium": TierProfile("medium", 12000, 20, 8000, 5),
+    "large": TierProfile("large", 20000, 25, 20000, 5),
+    "cloud": TierProfile("cloud", 32000, 25, 50000, 5),
 }
 
 
-def get_effective_context(model_name: str) -> int:
-    """Return the effective (usable) context budget for a model."""
-    tier = classify_model_tier(model_name)
-    return _EFFECTIVE_CONTEXT.get(tier, 6000)
+def get_profile(
+    model_name: str,
+    agent_cfg: dict | None = None,
+    params_b: float | None = None,
+) -> TierProfile:
+    """Return the tier profile for *model_name*, honouring ``agent.tier`` / ``agent.contextWindow``.
+
+    *params_b* (the size the server reports) beats guessing from the name.
+    """
+    agent_cfg = agent_cfg or {}
+    tier = agent_cfg.get("tier") or (
+        tier_for_size(params_b) if params_b else classify_model_tier(model_name)
+    )
+    if tier not in _PROFILES:
+        raise ValueError(f"Invalid agent.tier {tier!r}. Use one of: {', '.join(TIERS)}.")
+    profile = _PROFILES[tier]
+    if agent_cfg.get("contextWindow"):
+        profile = replace(profile, context=int(agent_cfg["contextWindow"]))
+    return profile
 
 
-# Default max iterations per tier (used when user hasn't set a custom value).
-_TIER_MAX_ITERATIONS = {
-    "tiny": 10,
-    "small": 15,
-    "medium": 20,
-    "cloud": 25,
-}
+# Room for the system prompt and the model's reply on top of the conversation budget.
+_PROMPT_RESERVE = 1024
+_REPLY_RESERVE = 2048
 
 
-def get_tier_max_iterations(model_name: str) -> int:
-    """Suggested max iterations for a model tier."""
-    tier = classify_model_tier(model_name)
-    return _TIER_MAX_ITERATIONS.get(tier, 20)
+def context_overhead(tool_defs: list[dict] | None = None) -> int:
+    """Tokens needed on top of the conversation budget: tool schemas plus reserves."""
+    schemas = estimate_tokens(json.dumps(tool_defs)) if tool_defs else 0
+    return schemas + _PROMPT_RESERVE + _REPLY_RESERVE
 
 
-# Tool output size limits per tier.
-_TIER_OUTPUT_LIMITS = {
-    "tiny": 2000,
-    "small": 4000,
-    "medium": 8000,
-    "cloud": 50000,
-}
+def num_ctx_for(profile: TierProfile, tool_defs: list[dict] | None = None) -> int:
+    """Context window to request from the server (Ollama ``num_ctx``), in tokens.
 
-
-def get_output_limit(model_name: str) -> int:
-    """Max chars for a single tool output, based on model tier."""
-    tier = classify_model_tier(model_name)
-    return _TIER_OUTPUT_LIMITS.get(tier, 10000)
+    Conversation budget + tool schemas + prompt and reply reserves, rounded up
+    to a multiple of 2048.
+    """
+    need = profile.context + context_overhead(tool_defs)
+    return -(-need // 2048) * 2048

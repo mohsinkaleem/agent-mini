@@ -9,6 +9,7 @@ from pathlib import Path
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _URL_PATTERN = re.compile(r"https?://\S+\.(?:png|jpe?g|gif|webp|bmp)", re.IGNORECASE)
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 def is_image_path(text: str) -> bool:
@@ -31,12 +32,29 @@ def encode_image_base64(path: str | Path) -> tuple[str, str]:
     return data, mime
 
 
-def build_image_content_parts(text: str) -> list[dict] | None:
+def _local_image(ref: str, workspace: Path | None) -> Path | None:
+    """Resolve *ref* (relative paths against *workspace*) to an existing image of sane size."""
+    p = Path(ref).expanduser()
+    if not p.is_absolute() and workspace is not None:
+        p = workspace / p
+    try:
+        return p if p.is_file() and p.stat().st_size <= MAX_IMAGE_BYTES else None
+    except OSError:
+        return None
+
+
+def build_image_content_parts(
+    text: str,
+    workspace: Path | None = None,
+    allow_local: bool = True,
+) -> list[dict] | None:
     """Parse message text for image references and build multi-part content.
 
     Returns None if no images are found (use plain text message instead).
     Supports:
-    - Local file paths: /path/to/image.png or relative paths
+    - Local file paths: /path/to/image.png, or relative to *workspace*
+      (skipped when *allow_local* is False, e.g. for remote chat users;
+      files over 10 MB are ignored)
     - Image URLs: https://example.com/image.jpg
     """
     parts: list[dict] = []
@@ -48,8 +66,9 @@ def build_image_content_parts(text: str) -> list[dict] | None:
 
     for word in words:
         clean = word.strip("\"'(),;[]")
-        if is_image_path(clean) and Path(clean).expanduser().exists():
-            image_refs.append(clean)
+        local = _local_image(clean, workspace) if allow_local and is_image_path(clean) else None
+        if local:
+            image_refs.append(str(local))
         elif is_image_url(clean):
             image_refs.append(clean)
         else:

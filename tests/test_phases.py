@@ -6,9 +6,7 @@ import pytest
 
 from agent_mini.agent.memory import Memory
 from agent_mini.agent.tools import ToolExecutor
-from agent_mini.config import AppConfig
 from agent_mini.sessions import (
-    delete_session,
     generate_session_id,
     list_sessions,
     load_session,
@@ -102,10 +100,7 @@ async def test_readonly_allows_memory(readonly_executor: ToolExecutor):
 # ------------------------------------------------------------------
 
 
-def test_session_save_load(tmp_path: Path, monkeypatch):
-    import agent_mini.sessions as sess
-    monkeypatch.setattr(sess, "_SESSIONS_DIR", tmp_path / "sessions")
-
+def test_session_save_load():
     sid = generate_session_id()
     convo = [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
     save_session(sid, convo)
@@ -116,10 +111,7 @@ def test_session_save_load(tmp_path: Path, monkeypatch):
     assert loaded[0]["content"] == "hello"
 
 
-def test_session_list(tmp_path: Path, monkeypatch):
-    import agent_mini.sessions as sess
-    monkeypatch.setattr(sess, "_SESSIONS_DIR", tmp_path / "sessions")
-
+def test_session_list():
     save_session("s1", [{"role": "user", "content": "first"}])
     save_session("s2", [{"role": "user", "content": "second"}])
 
@@ -127,62 +119,8 @@ def test_session_list(tmp_path: Path, monkeypatch):
     assert len(sessions) == 2
 
 
-def test_session_delete(tmp_path: Path, monkeypatch):
-    import agent_mini.sessions as sess
-    monkeypatch.setattr(sess, "_SESSIONS_DIR", tmp_path / "sessions")
-
-    save_session("del_me", [{"role": "user", "content": "bye"}])
-    assert delete_session("del_me") is True
-    assert load_session("del_me") is None
-
-
-def test_session_not_found(tmp_path: Path, monkeypatch):
-    import agent_mini.sessions as sess
-    monkeypatch.setattr(sess, "_SESSIONS_DIR", tmp_path / "sessions")
-
+def test_session_not_found():
     assert load_session("nonexistent") is None
-
-
-# ------------------------------------------------------------------
-# Typed config (Phase 4.5)
-# ------------------------------------------------------------------
-
-
-def test_app_config_from_dict():
-    raw = {
-        "provider": "openai",
-        "providers": {
-            "openai": {"apiKey": "test-key", "model": "gpt-4o"},
-            "ollama": {"model": "llama3"},
-        },
-        "agent": {"maxIterations": 10, "temperature": 0.5},
-        "tools": {"sandboxLevel": "readonly", "blockedCommands": ["curl"]},
-        "memory": {"enabled": True, "maxEntries": 500},
-    }
-    cfg = AppConfig.from_dict(raw)
-    assert cfg.provider == "openai"
-    assert cfg.providers.openai.apiKey == "test-key"
-    assert cfg.providers.openai.model == "gpt-4o"
-    assert cfg.providers.ollama.model == "llama3"
-    assert cfg.agent.maxIterations == 10
-    assert cfg.tools.sandboxLevel == "readonly"
-    assert cfg.memory.maxEntries == 500
-
-
-def test_app_config_defaults():
-    cfg = AppConfig.from_dict({})
-    assert cfg.provider == "ollama"
-    assert cfg.providers.ollama.model == "llama3.1"
-    assert cfg.agent.temperature == 0.7
-    assert cfg.tools.sandboxLevel == "workspace"
-
-
-def test_app_config_round_trip():
-    cfg = AppConfig.from_dict({"provider": "local"})
-    d = cfg.to_dict()
-    assert d["provider"] == "local"
-    assert "providers" in d
-    assert "ollama" in d["providers"]
 
 
 # ------------------------------------------------------------------

@@ -35,7 +35,7 @@ Source map:
 
 - Loop and prompt: [src/agent_mini/agent/loop.py](../src/agent_mini/agent/loop.py), [src/agent_mini/agent/context.py](../src/agent_mini/agent/context.py)
 - Tools: [src/agent_mini/agent/tools.py](../src/agent_mini/agent/tools.py)
-- Providers: [src/agent_mini/providers/base.py](../src/agent_mini/providers/base.py), [ollama.py](../src/agent_mini/providers/ollama.py), [local.py](../src/agent_mini/providers/local.py), [openai.py](../src/agent_mini/providers/openai.py)
+- Providers: [src/agent_mini/providers/base.py](../src/agent_mini/providers/base.py), [ollama.py](../src/agent_mini/providers/ollama.py), [local.py](../src/agent_mini/providers/local.py)
 - Channels: [src/agent_mini/channels/telegram.py](../src/agent_mini/channels/telegram.py)
 - Bus + sessions: [src/agent_mini/bus.py](../src/agent_mini/bus.py), [src/agent_mini/sessions.py](../src/agent_mini/sessions.py)
 - CLI: [src/agent_mini/cli.py](../src/agent_mini/cli.py)
@@ -53,16 +53,19 @@ The `agent-mini` command is a Click group defined in [src/agent_mini/cli.py](../
 | Command | What it does |
 |---|---|
 | `init` | Interactive wizard → writes `~/.agent-mini/config.json` |
-| `chat [-m MSG] [-s SESSION] [--workspace DIR]` | Single-shot or REPL |
+| `chat [-m MSG] [-s SESSION] [--workspace DIR] [--provider P] [--model M] [--yes] [--no-stream] [--show-thinking]` | Single-shot or REPL |
 | `gateway` | Starts the Telegram bot |
-| `status` | Prints active provider, channels, sandbox, memory |
+| `doctor` | Health check of config, provider, model and tools (see §12) |
 
 The chat command wires everything together in `_chat()`:
 
 ```
 load_config → create_provider → Memory(...) → AgentLoop(provider, config, memory)
-             → resume/create session → REPL loop → agent.run(...) → save_session(...)
+             → agent.detect_model() → resume/create session
+             → REPL loop → agent.run(...) → save_session(...)
 ```
+
+On a terminal the reply streams: `_TurnView` shows a spinner while waiting, switches to a Rich `Live` Markdown view when deltas arrive (thinking dimmed above it with `--show-thinking`), freezes the streamed text when a tool starts, and pauses for approval prompts. Off a terminal (pipes, evals) nothing streams and the reply is printed once.
 
 The `--workspace` flag (and `AGENT_MINI_WORKSPACE` env var) overrides `config["workspace"]` and forces `restrictToWorkspace: true`. This is what the [evals harness](../evals/README.md) uses to sandbox each task into a temp dir without touching the user's real config.
 
@@ -74,7 +77,7 @@ Everything runs through `AgentLoop.run()` in [loop.py](../src/agent_mini/agent/l
 
 ### 3.1 Per-turn flow
 
-1. Rebuild the system prompt every turn (date, workspace, recent memories, model tier are all live).
+1. Rebuild the system prompt every turn (date, workspace, project instructions, recent memories, model tier). It changes only when the date or memories change, so local servers can reuse their KV cache.
 2. Prepend system prompt to the persisted `conversation`, append the new user turn.
 3. If the user message contains image references (paths or URLs), the user turn becomes an OpenAI-style multi-part `content` list — see [vision.py](../src/agent_mini/agent/vision.py).
 4. Enter an iteration budget (default from tier; user override in `config["agent"]["maxIterations"]`).
@@ -82,60 +85,64 @@ Everything runs through `AgentLoop.run()` in [loop.py](../src/agent_mini/agent/l
 Inside each iteration:
 
 ```
-prune old tool results  →  call provider (with retry+jitter)
-                       →  if response has tool_calls: exec in parallel, append tool msgs, continue
-                       →  else: return text, persist turn, maybe summarize history, done
+prune to budget  →  call provider (with retry+jitter)
+                 →  no native tool_calls? try parse_text_tool_calls() on the text
+                 →  if tool calls: exec in parallel, append tool msgs, check for loops, continue
+                 →  else: return text, persist turn (+ tool trace), maybe summarize history, done
 ```
 
-Relevant code: [loop.py L92-L235](../src/agent_mini/agent/loop.py#L92-L235).
+If the budget runs out, one more call is made with `tools=None` asking the model to summarize what it did and what is left; that summary plus `[Stopped: reached max iterations (N) before finishing.]` is the reply (`finish_reason = "max_iterations"`, exit code 2).
+
+Per-run state (tool trace, loop signatures, nudge count) lives in local variables, so concurrent gateway users can't mix it up.
 
 ### 3.2 Retry with jitter
 
-`_call_provider_with_retry` retries on transient errors (HTTP 429/500/502/503/504, `ConnectError`, `ReadTimeout`, `OSError`) up to 3 times with exponential backoff plus random jitter: `wait = 2**attempt + random.uniform(0, 1)`. Non-transient errors fail through as an error string. See [loop.py L306-L336](../src/agent_mini/agent/loop.py#L306-L336).
+`_call_provider_with_retry` retries on transient errors (HTTP 429/500/502/503/504, `ConnectError`, `RemoteProtocolError`, `ReadError`) up to 3 times with exponential backoff plus random jitter: `wait = 2**attempt + random.uniform(0, 1)`. Read timeouts are not retried (a model that took 300 s will do it again), and nothing is retried once streamed text has reached the user, since that would show it twice. Non-transient errors fail through as an error string; the turn is still recorded.
 
 ### 3.3 Parallel tool execution
 
 When the LLM returns multiple tool calls in one response, they're dispatched concurrently with `asyncio.gather`, tagged with `tool_call_id`, and appended in order:
 
 ```python
-results = await asyncio.gather(*[_exec(tc) for tc in response.tool_calls])
+results = await asyncio.gather(*[self._run_tool(tc, on_tool_event) for tc in calls])
 ```
 
-Each result is truncated to the **tier-specific output limit** (tiny 2 KB, small 4 KB, medium 8 KB, cloud 50 KB) with a head+tail split so the model sees both ends. If a tool returned `Error: ...`, the message is postfixed with a self-reflection nudge:
+Each result is truncated to the **tier-specific output limit** (tiny 2 KB, small 4 KB, medium 8 KB, large 20 KB, cloud 50 KB) with a head+tail split so the model sees both ends (for `read_file` the marker suggests `offset`/`limit`). If a tool returned `Error: ...`, the message is postfixed with a self-reflection nudge:
 
 > [The tool call failed. Analyze what went wrong and try a different approach.]
 
 ### 3.4 Loop / repetition detection
 
-Every tool call is hashed with MD5 over `{name, args}` and pushed onto a sliding window of the last 6 signatures. If the last **four** are identical, a synthetic `user` message is appended:
+Each call's signature is `json.dumps([name, args, result[:500]])`, so "same call, same result" is what counts as a repeat. If the last four signatures match the pattern A-B-A-B (which includes A-A-A-A), the loop appends a nudge:
 
 > You have repeated the same tool call multiple times with the same result. Try a completely different approach.
 
-This catches small models that get stuck retrying the same failing shell command. See [loop.py L213-L227](../src/agent_mini/agent/loop.py#L213-L227).
+The second time it happens in a run, the loop stops: one call with `tools=None` asks the model to explain what it tried, and the run ends with `finish_reason = "stuck"` (exit code 4).
 
 ### 3.5 Context pruning
 
 `_prune_tool_results` is called every iteration on a **copy** of `messages` (never mutates history). It:
 
-- protects the last 3 assistant turns and their tool results,
-- soft-trims older large tool messages to head 1500 + tail 1500,
-- hard-clears very old ones with `[Old tool result cleared to save context]`.
-
-This keeps the request payload small without losing recent reasoning steps.
+- trims tool results older than the last 3 assistant turns to head+tail at half the tier's output limit (at least 1 000 chars), which also works for the tiny and small tiers whose results are already capped at 2 000 / 4 000 chars,
+- then, while the estimated request is over the tier's context budget, replaces the oldest tool results with `[cleared to save context: <tool> output, N chars. Re-run the tool if you need it.]`. The results of the latest round are never cleared.
 
 ### 3.6 History summarization
 
 After a text-only response, if the persisted conversation exceeds 75% of the model's effective context, `_summarize_history` fires. It:
 
-1. Finds the cut point that would bring us back below 50%.
-2. Calls the provider with a tight summarization prompt (`temperature=0.3`, no tools).
-3. Replaces the pruned tail with a single **`role: "user"`** turn containing `[Previous context summary]\n...`.
+1. Finds the cut point that would bring us back below 50%, never past the latest exchange, and moves it back so the kept part starts on a user turn.
+2. Calls the provider with a tight summarization prompt (`temperature=0.3`, no tools). Messages are clipped to 500 chars, except an earlier `[Previous context summary]`, which is carried over whole.
+3. Replaces the summarized head with a single **`role: "user"`** turn containing `[Previous context summary]\n...`.
 
-Why `user`, not `system`? The real system prompt is re-prepended fresh every turn in `run()`, so a stored `system` entry would give small models two leading system messages and dilute the constraint-first anchoring they rely on. See [loop.py L268-L304](../src/agent_mini/agent/loop.py#L268-L304).
+Why `user`, not `system`? The real system prompt is re-prepended fresh every turn in `run()`, so a stored `system` entry would give small models two leading system messages and dilute the constraint-first anchoring they rely on.
 
 ### 3.7 Token / cost tracking
 
-Two counters live on the loop: `session_usage` and per-turn `turn_usage`, both `{prompt_tokens, completion_tokens, total_tokens}`. Providers surface `usage` on `ChatResponse` when the backend reports it (Ollama's `prompt_eval_count`/`eval_count`; OpenAI's `usage`).
+Two counters live on the loop: `session_usage` and per-turn `turn_usage`, both `{prompt_tokens, completion_tokens, total_tokens}`. Providers surface `usage` on `ChatResponse` when the backend reports it (Ollama's `prompt_eval_count`/`eval_count`, including in streams; OpenAI's `usage`, requested in streams with `stream_options.include_usage`).
+
+### 3.8 Tool trace
+
+Only user messages and final replies are persisted. So later turns know what happened, the saved reply ends with `[tools used: read_file(src/a.py), code_edit(src/a.py)]` (at most 12 entries).
 
 ---
 
@@ -145,19 +152,24 @@ Two counters live on the loop: `session_usage` and per-turn `turn_usage`, both `
 
 ### 4.1 Classification
 
-Regex patterns match from most-specific to least. Cloud models (`gpt-4`, `claude`, `gemini`, `deepseek-v2/v3`) win first, then large open-weight sizes (32B, 34B, 40B, 65B, 70B, 72B, 8x7B, 8x22B) also map to `cloud`. The `(?<![\d.])` lookbehind is important — it prevents `1.5b` (a tiny model) matching the `5b` in the small-tier regex.
+`classify_model_tier` reads the parameter count from the name (`:8b`, `:0.6b`, `8x7b` counts as 56B, `135m` is tiny). The `(?<![\w.])` lookbehind skips version digits (`qwen2.5`) and active-parameter tags (`30b-a3b` is 30B, not 3B). Names without a size tag are `cloud` when they look like an API model (`gpt-*`, `o3`, `claude*`, `gemini*`, `grok*`, `deepseek-chat`), otherwise `small`. `get_profile()` returns the budgets as a frozen `TierProfile` and honours `agent.tier` / `agent.contextWindow` overrides.
 
-| Tier | Effective context | Max iterations | Tool output cap |
-|---|---|---|---|
-| tiny (1–3B) | 3 000 | 10 | 2 000 chars |
-| small (4–8B) | 6 000 | 15 | 4 000 chars |
-| medium (9–14B) | 12 000 | 20 | 8 000 chars |
-| cloud / large open-weight | 32 000 | 25 | 50 000 chars |
+**Detection beats guessing.** At startup (and after `/model`) the CLI and gateway call `AgentLoop.detect_model()`, which asks the provider for a `ModelInfo` (Ollama: `/api/show` → `parameter_size`, `<arch>.context_length`, `capabilities`). A reported size picks the tier; a reported context length caps both the conversation budget and `num_ctx`. A model without the `tools` capability triggers a warning.
+
+**`num_ctx`.** `AgentLoop` sets `provider.context_window = num_ctx_for(profile, tool_defs)`: the conversation budget + tool-schema tokens + 1 024 (system prompt) + 2 048 (reply), rounded up to a multiple of 2 048. The Ollama provider sends it as `options.num_ctx` unless `providers.ollama.numCtx` pins a value. Without it Ollama uses its 2k–4k default and silently cuts the front of the prompt.
+
+| Tier | Effective context | Max iterations | Tool output cap | Memories in prompt |
+|---|---|---|---|---|
+| tiny (<4B) | 3 000 | 10 | 2 000 chars | 0 |
+| small (4–8B) | 6 000 | 15 | 4 000 chars | 3 |
+| medium (9–19B) | 12 000 | 20 | 8 000 chars | 5 |
+| large (20–72B) | 20 000 | 25 | 20 000 chars | 5 |
+| cloud (>72B, API models) | 32 000 | 25 | 50 000 chars | 5 |
 
 ### 4.2 What changes per tier
 
 - **System prompt** (`context.py`): tiny models get a stripped `_TINY_RULES` block instead of the full `_SYSTEM_PROMPT_TEMPLATE` — every token trades against reasoning budget.
-- **Memory recall in prompt**: tiny=0, small=3, medium=5, cloud=5 recent memories. Tiny models get confused by unrelated context.
+- **Memory recall in prompt**: see the table. Tiny models get confused by unrelated context.
 - **Inline tool listing**: an `<available_tools>` block is always emitted so small models can eyeball tool names without reasoning over the JSON schema.
 - **Max iterations, context budget, output cap**: all pulled from the tier tables above unless the user pins a value in config.
 
@@ -172,16 +184,18 @@ Cheap: `~4 chars per token`. Vision image parts count as ~85 tokens each. Tool-c
 [context.py](../src/agent_mini/agent/context.py):
 
 ```
-[tier-scaled preamble + rules]
+[tier-scaled preamble + rules]         <- date only, no clock
 [<available_tools> ... </available_tools>]
 [## User instructions   <- from config.agent.systemPrompt]
-[## Recent memories     <- top-N by tier]
+[<project_instructions> <- .agent-mini.md or AGENTS.md in the workspace, capped]
+[## Recent memories     <- top-N by tier, last because they change most]
 ```
 
-Two anti-injection details worth noting:
+Anti-injection details worth noting:
 
 - The template uses `str.format(date=..., workspace=...)` — user-controlled fields never go through `.format()`. Custom `systemPrompt` and memory values are string-concatenated, so a stray `{}` from the user won't blow up formatting.
-- Memory content is appended raw — treat it as effectively user-provided when auditing.
+- Memory content and project instructions are appended raw — treat them as effectively user-provided when auditing.
+- `web_fetch` / `web_search` output is wrapped in `<untrusted_content source="…">`, and a rule tells the model never to follow instructions found inside it.
 
 ---
 
@@ -214,7 +228,15 @@ Small models emit malformed JSON. `parse_arguments` first tries `json.loads`, th
 3. Swaps single→double quotes when there are no doubles.
 4. Quotes unquoted keys (`{foo: 1}` → `{"foo": 1}`).
 
-Only successful `dict` results are returned; anything else logs a warning and drops the call. See [providers/base.py L37-L88](../src/agent_mini/providers/base.py#L37-L88).
+Only successful `dict` results are returned; anything else becomes `{"__invalid_json__": raw}` and the executor answers with an `Error:` asking for valid JSON.
+
+### 6.2b Tool calls written as text
+
+When a response has no native `tool_calls`, `parse_text_tool_calls(content, known_tool_names)` looks for Hermes/Qwen `<tool_call>{…}</tool_call>` tags, Mistral's `[TOOL_CALLS] [...]`, fenced JSON blocks, and a bare `{"name": …, "arguments"|"parameters": …}` message (with an optional `<|python_tag|>` prefix). Only known tool names count, and a fenced block inside a long answer is treated as an example, not a call. Recovered calls are logged (`Recovered N tool call(s) written as text`) and counted in `AgentLoop.text_tool_calls`.
+
+### 6.2c Errors and IDs
+
+`raise_for_status(resp, hint)` reads the error body before raising, so users see the server's message (`model 'x' not found`) plus a hint (`run: ollama pull x`, or "this model has no tool support"). Missing tool-call IDs get a random `call_<12 hex>` instead of a reused `call_0`.
 
 ### 6.3 Ollama
 
@@ -222,20 +244,24 @@ Only successful `dict` results are returned; anything else logs a warning and dr
 
 Notable transforms in `_clean_messages`:
 
-- `role: "tool"` messages are rewritten to `role: "user"` with a `[Tool result for ...]:` prefix, for compatibility with older Ollama builds that don't fully speak the tool-role protocol.
+- Tool calls use Ollama's native shape: assistant messages keep `tool_calls` with **object** arguments, and results are `{"role": "tool", "tool_name": …}`. Only Ollama builds with native tool messages are supported.
 - OpenAI-style multi-part vision content (`[{type: "image_url", ...}]`) is flattened to Ollama's `{content, images: ["<base64>"]}` shape, stripping `data:...;base64,` prefixes when present.
 - `think` (`false | true | "low" | "medium" | "high"`) is passed through unchanged; thinking deltas are streamed via a separate `on_thinking` callback.
 
+The payload carries `options.num_ctx` (see §4.1) and `keep_alive` when configured. Streaming collects tool calls from every chunk (newer builds split them) and reads usage from the final `done` chunk.
+
 ### 6.4 OpenAI-compatible (`LocalProvider`)
 
-[local.py](../src/agent_mini/providers/local.py) — plain `/chat/completions` client. Two subtleties:
+[local.py](../src/agent_mini/providers/local.py) — plain `/chat/completions` client. Subtleties:
 
 - Streaming tool calls arrive in fragments indexed by `tc["index"]`. We accumulate them in a dict, then sort by that **integer** index — not by `id` (opaque string) which would sort `"call_10"` before `"call_2"` lexicographically.
 - Arguments arrive as string fragments concatenated across chunks; we run the full string through `parse_arguments` (repair-aware) at the end.
+- SSE lines are accepted as `data: {…}` and `data:{…}`; streams request `stream_options.include_usage` and read the usage-only final chunk.
+- `reasoning_content` (vLLM, llama.cpp, DeepSeek) becomes `ChatResponse.thinking` and streams through `on_thinking`.
 
 ### 6.5 OpenAI
 
-[openai.py](../src/agent_mini/providers/openai.py) is a 20-line subclass of `LocalProvider` with `base_url = https://api.openai.com/v1` and `name = "openai"`. That's the whole thing — OpenAI *is* the reference implementation of its own protocol.
+There is no OpenAI class: `create_provider` builds a `LocalProvider` with `base_url = https://api.openai.com/v1` and `name = "openai"`. OpenAI *is* the reference implementation of its own protocol.
 
 ---
 
@@ -249,34 +275,37 @@ All in [tools.py](../src/agent_mini/agent/tools.py). Tool definitions use the Op
 
 ### 7.1 Built-in tools
 
-Registered in `_CORE_TOOLS` and `_WEB_TOOLS`:
+Registered in `_TOOLS`. Tools return their full output; the loop cuts it to the tier's output limit (head + tail) in one place:
 
 | Tool | Notes |
 |---|---|
-| `shell_exec` | Runs via `asyncio.create_subprocess_shell` inside workspace `cwd`, 120 s timeout, output capped at 50 KB. Blocklist regex enforced. |
-| `read_file` / `write_file` / `append_file` / `code_edit` | Text I/O. `code_edit` requires **exact single-match** find-and-replace and returns a specific error for 0 or >1 matches so the model can adjust. `read_file` caps content at 100 KB. |
-| `list_directory` | Sorted, directories first, capped at 200 entries. |
-| `search_files` | Prefers `rg` (ripgrep) with `--hidden --glob '!.git'`; falls back to `grep -rn`. Output capped at 100 KB. `returncode` 0 or 1 both count as success (1 = no matches). |
-| `web_search` | POSTs to `https://html.duckduckgo.com/html/`; parses result blocks with regex; unwraps DuckDuckGo redirect `uddg` param; returns top 8 as Markdown. |
-| `web_fetch` | SSRF-guarded, HTML → plain text via a stdlib `HTMLParser` subclass. |
-| `memory_store` / `memory_recall` | See section 8. |
+| `shell_exec` | Runs via `asyncio.create_subprocess_shell` inside workspace `cwd` in its own process group, with secret-looking env vars (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`) removed unless listed in `tools.shellEnvAllow`. On timeout (`tools.shellTimeout`, default 120 s) the whole group is killed. A non-zero exit appends `[exit code: N]` (no `Error:` prefix, since `grep` exits 1 on no match). Blocklist regex enforced. |
+| `read_file` | UTF-8 text; optional `offset`/`limit` line range with a `[lines a-b of n]` header; files with a NUL byte in the first 8 KB are reported as binary. |
+| `write_file` | UTF-8 text; parent dirs created. |
+| `code_edit` | Exact single-match find-and-replace first. If that finds nothing, a line-by-line match that ignores leading/trailing whitespace is tried, and the new text is re-indented to the file's indentation. CRLF files stay CRLF; non-UTF-8 files are refused rather than corrupted. Success shows the edited lines with 2 lines of context; failure shows the closest match (difflib, ≥ 60 % similar). |
+| `list_directory` | Sorted, directories first, capped at 200 entries with `… and N more entries`. |
+| `find_files` | Glob search via `os.walk`, skipping `.git`, `node_modules`, `.venv`, caches. `*.py` matches at any depth; results are workspace-relative, sorted, capped at 200. |
+| `search_files` | Prefers `rg` (ripgrep) with `--hidden`, skipping `.git`, `node_modules` and `.venv`; falls back to `grep -rnI`. Uses `-e <query> --` so a pattern starting with `-` isn't read as a flag. Paths are workspace-relative, 30 s timeout. `returncode` 0 or 1 both count as success (1 = no matches). |
+| `web_search` | POSTs to the DuckDuckGo lite / HTML endpoints; parses result blocks with regex; unwraps DuckDuckGo redirect `uddg` param; returns top 8 as Markdown inside `<untrusted_content>`. |
+| `web_fetch` | SSRF-guarded per redirect hop, streamed with a 2 MB cap, HTML → plain text via a stdlib `HTMLParser` subclass, wrapped in `<untrusted_content>`. |
+| `memory_store` / `memory_recall` / `memory_forget` | See section 8. |
 
 ### 7.2 SSRF guard
 
-`_check_url_ssrf` enforces:
+`_check_url_ssrf` (async) enforces:
 
 - scheme in `{http, https}`,
 - literal IPs must not be private/loopback/link-local/reserved,
-- host names are resolved via `getaddrinfo` and every returned `A`/`AAAA` record is checked — catches DNS names pointing into RFC-1918.
+- host names are resolved via `loop.getaddrinfo` (no blocking DNS on the event loop) and every returned `A`/`AAAA` record is checked — catches DNS names pointing into RFC-1918.
 
-After the request, the **final** URL (post-redirect) is re-checked so an attacker can't 302 into `169.254.169.254`. Documented caveat: DNS rebinding can still bypass — `sandboxLevel: readonly` is the stronger guarantee.
+Redirects are followed by hand (at most 5 hops) and every `Location` is checked **before** it is requested, so a 302 into `169.254.169.254` never fires. Documented caveat: DNS rebinding can still bypass — `sandboxLevel: readonly` is the stronger guarantee.
 
 ### 7.3 Shell command blocklist
 
 Default patterns:
 
 ```
-\brm\s+-[^\s]*r[^\s]*f     rm -rf variants
+\brm\b(?=…-r|--recursive)(?=…-f|--force)   rm with recursive + force flags, any order
 \bsudo\b                    privilege escalation
 \bmkfs\b                    filesystem format
 \bdd\s+if=                  raw disk write
@@ -292,9 +321,17 @@ Default patterns:
 
 - `unrestricted` — all tools, all paths.
 - `workspace` (default) — all tools, but `_resolve_path` refuses anything outside `config.workspace`.
-- `readonly` — hard-blocks `shell_exec`, `write_file`, `append_file`, `code_edit` at the `execute()` gate. Read, search, memory, and web tools still work.
+- `readonly` — hides and hard-blocks `shell_exec`, `write_file`, `code_edit`. Read, search, memory, and web tools still work, restricted to the workspace.
+
+Any other value raises `ValueError` in `ToolExecutor.__init__` (case is ignored), which the CLI reports as a config error. Before dispatch, `execute()` also checks the call against the tool's schema: unknown tools, missing required arguments and unparseable JSON arguments come back as `Error:` messages that say what to send instead.
 
 Path resolution: `_resolve_path` expands `~`, resolves absolute paths, joins relative paths to the workspace, and in restricted mode raises `PermissionError` if the resolved path is not `is_relative_to(workspace)`. The tool exception handler catches this and returns `Error: PermissionError: ...` to the model.
+
+### 7.4b Approval mode and undo
+
+Tools listed in `tools.confirm` go through `ToolExecutor.approver`, an async `(name, arguments) -> bool` callback, after argument validation and before dispatch. With no approver (the gateway), those tools are denied with an `Error:` telling the model to explain instead. The CLI's approver pauses the spinner/stream and asks `[y]es / [N]o / [a]lways / [d]iff`; `d` prints `preview_change()`, a unified diff computed without writing. `chat --yes` empties the list; a non-interactive run without `--yes` gets EOF and denies.
+
+Before `write_file` or `code_edit` writes, `_checkpoint()` stores the file's previous bytes (or "did not exist") on an in-memory stack of 50. `/undo` pops it: restore the bytes, or delete a file the agent created. `shell_exec` changes are not covered.
 
 ### 7.5 Plugins
 
@@ -315,7 +352,7 @@ async def handler(arguments: dict) -> str:
     return datetime.now(timezone.utc).isoformat()
 ```
 
-No registration, no manifest — drop the file, restart the agent.
+No registration, no manifest — drop the file, restart the agent. Plugins can't shadow a built-in name, and in the `readonly` sandbox only plugins whose `TOOL_DEF` has `"x-readonly": true` are loaded (the flag is stripped before the definition is sent to the provider). The plugin directory follows `AGENT_MINI_HOME`.
 
 ---
 
@@ -325,7 +362,7 @@ No registration, no manifest — drop the file, restart the agent.
 
 ### 8.1 Storage
 
-`store()` appends a dict, trims to `maxEntries` from the tail, and rewrites the file. Corrupted JSON → warn, start fresh (never fatal).
+`store()` replaces any entry with the same key (case-insensitive) and appends the new one, trims to `maxEntries` from the tail, and rewrites the file atomically with `0600` permissions. `forget(key)` deletes by key. Corrupted JSON → the file is moved aside to `memory.json.corrupt` and the store starts fresh (never fatal).
 
 ### 8.2 Recall — hand-rolled TF-IDF
 
@@ -357,7 +394,7 @@ That's it — no external deps, works fine for the hundreds-of-entries scale a p
 }
 ```
 
-`save_session` is called after every REPL turn (see `_chat` in cli.py). IDs default to `YYYYMMDD_HHMMSS`. `list_sessions` returns all files sorted newest-first with a computed preview of the first user message. `/load <id>` mutates the in-memory `conversation` list; `/save` exports the conversation to Markdown (renders tool calls / results in collapsible `<details>` blocks).
+`save_session` is called after every REPL turn and after `chat -m` (see `_chat` in cli.py); writes are atomic and `0600`. IDs are `YYYYMMDD_HHMMSS_<4 hex>` so two terminals never collide, and any ID that isn't `^[\w-]+$` is rejected (no path traversal). `list_sessions` returns all files sorted newest-first with a computed preview of the first user message. `/load <id>` replaces the in-memory `conversation` list.
 
 ---
 
@@ -365,7 +402,9 @@ That's it — no external deps, works fine for the hundreds-of-entries scale a p
 
 ### 10.1 MessageBus
 
-[bus.py](../src/agent_mini/bus.py) is thin. It maintains an in-memory dict keyed by `f"{channel}:{user_id}"` mapping to the conversation list, and calls `agent.run()`. This is what isolates two Telegram users from each other, or the CLI from the bot.
+[bus.py](../src/agent_mini/bus.py) is thin. It maintains an in-memory dict keyed by `f"{channel}:{user_id}"` mapping to the conversation list, and calls `agent.run()` under a per-session `asyncio.Lock`, so two quick messages from one user run one after the other while different users run concurrently.
+
+The gateway also turns memory off when more than one user can reach the bot (unless `channels.telegram.sharedMemory: true`), sets `agent.allow_local_images = False`, and has no approver, so `tools.confirm` tools are denied.
 
 ### 10.2 Telegram channel
 
@@ -391,7 +430,7 @@ That's it — no external deps, works fine for the hundreds-of-entries scale a p
 ]
 ```
 
-- Local files are base64-encoded with the correct MIME type.
+- Local files are base64-encoded with the correct MIME type. Relative paths resolve against the workspace, files over 10 MB are ignored, and `allow_local=False` (the gateway) ignores local paths entirely.
 - Remote URLs are passed through unmodified.
 - The Ollama provider translates this shape into its native `{content, images: [...]}` in `_clean_messages`, so the same message works on all three providers.
 
@@ -399,41 +438,44 @@ That's it — no external deps, works fine for the hundreds-of-entries scale a p
 
 ## 12. Configuration
 
-[config.py](../src/agent_mini/config.py) mirrors the JSON config as typed dataclasses (`AppConfig`, `ProvidersConfig`, `AgentConfig`, `ToolsConfig`, etc.). The `AppConfig.from_dict` helper does key-filtered construction with `_pick`, so unknown keys in the JSON don't blow up instantiation — forward-compatible reads.
+[config.py](../src/agent_mini/config.py) loads the JSON config as a plain dict. Defaults live where each value is read (`cfg.get(key, default)`), and `init` writes only the choices you make, so the code stays the one source of defaults.
 
-Key paths (all under `~/.agent-mini/` by default):
+Key paths (all under `~/.agent-mini/` by default, or `$AGENT_MINI_HOME`):
 
 | Path | Purpose |
 |---|---|
-| `config.json` | User config |
+| `config.json` | User config (`0600`) |
 | `workspace/` | Default tool sandbox root |
-| `memory.json` | Persistent memory store |
+| `memory.json` | Persistent memory store (`0600`) |
 | `plugins/*.py` | User tool plugins |
-| `sessions/*.json` | Saved conversations |
+| `sessions/*.json` | Saved conversations (`0600`) |
 
-Runtime overrides: `--workspace <dir>` and `AGENT_MINI_WORKSPACE` env var (used by the evals runner to isolate each task).
+Runtime overrides: `--workspace <dir>` and `AGENT_MINI_WORKSPACE` env var (used by the evals runner to isolate each task), `AGENT_MINI_HOME` for the whole home directory. Secrets fall back to `AGENT_MINI_API_KEY` / `OPENAI_API_KEY` / `TELEGRAM_BOT_TOKEN` when the config leaves them empty.
+
+`agent-mini doctor` checks the config (JSON validity, permissions, sandbox and tier values), the workspace, provider reachability, whether the model is pulled and supports tools (Ollama), the resulting budgets and `num_ctx`, ripgrep, and the Telegram setup. It exits 1 when any check fails.
 
 ---
 
 ## 13. Evals Harness
 
-[evals/](../evals/) is a framework-free task runner. Each YAML task under `evals/tasks/` describes:
+[evals/](../evals/) is a framework-free task runner. Each TOML task under `evals/tasks/` (parsed with stdlib `tomllib`) describes:
 
 - fixtures to copy into a temp workspace,
 - a prompt to send to the agent,
-- success predicates (file exists, `pytest` passes, regex in output, etc.),
-- caps on iterations / tokens.
+- shell checks with `expect_exact` / `expect_regex` / substring matchers (`{python}` expands to the harness interpreter),
+- `fixture_unchanged` paths the agent must not modify.
 
-`evals/run.py` invokes the same `AgentLoop` with `AGENT_MINI_WORKSPACE` pointing at that temp dir, records success/iterations/tokens/tool-call counts, and writes a JSON report under `evals/results/`. `--compare results/*.json` prints a cross-model table. This is what lets tier-scaling changes be measured rather than intuited.
+`evals/run.py` runs `agent-mini chat -m … --yes` with `--workspace` pointing at that temp dir, `--provider/--model` passed through, and `AGENT_MINI_HOME` set to a throwaway home whose config holds only the user's provider settings (memory off, no system prompt, plugins or sessions). It maps the exit code to a failure reason (`max_iterations`, `provider_error`, `stuck`, `timeout`), and writes a JSON report under `evals/results/`. `--compare results/*.json` prints a cross-model table. This is what lets tier-scaling changes be measured rather than intuited.
 
 ---
 
 ## 14. Error Handling & Observability
 
-- **Provider errors**: transient → retry with jitter; permanent → the loop returns `f"Error communicating with LLM: {e}"` as the final text (still gets saved to conversation).
+- **Provider errors**: transient → retry with jitter; permanent → the loop returns `f"Error communicating with LLM: {e}"` as the final text, and the turn is recorded as `[No reply: the model provider failed.]` plus the tool trace.
 - **Tool errors**: caught in `execute()`, returned as `Error: {type}: {msg}`. The loop postfixes the self-reflection nudge so the model retries with a different approach.
-- **Max iteration exhaustion**: the user turn is still appended with an assistant message `[Stopped: reached max iterations without completing.]` — so the next turn doesn't have amnesia about what happened.
-- **Logging**: `logging.getLogger("agent-mini")`. `-v/--verbose` on `chat` / `gateway` flips to DEBUG. Tool calls log at INFO with a 200-char argument preview and 🔧 emoji marker; tool results at DEBUG with a 300-char preview.
+- **Max iteration exhaustion / loops**: a final tool-less call produces a summary; the turn is persisted with a `[Stopped: …]` marker so the next turn doesn't have amnesia about what happened.
+- **Cancellation**: in the REPL each turn runs as a task with a SIGINT handler that cancels it, so Ctrl+C stops the turn and returns to the prompt.
+- **Logging**: `logging.getLogger("agent-mini")`. `-v/--verbose` on `chat` / `gateway` flips to DEBUG. Tool calls and results log at DEBUG; JSON repairs, text tool-call recovery and loop nudges log at INFO (the eval harness counts them).
 
 ---
 

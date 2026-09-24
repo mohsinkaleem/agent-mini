@@ -3,12 +3,14 @@
   "providers": {
     "ollama": {
       "baseUrl": "http://localhost:11434",
-      "model": "llama3.1",
-      "think": false
+      "model": "qwen3:8b",
+      "think": false,
+      "numCtx": null,
+      "keepAlive": null
     },
     "openai": {
       "apiKey": "",
-      "model": "gpt-4o"
+      "model": "gpt-5-mini"
     },
     "local": {
       "baseUrl": "http://localhost:8080/v1",
@@ -17,20 +19,27 @@
     }
   },
   "agent": {
-    "maxIterations": 20,
+    "maxIterations": null,
     "temperature": 0.7,
-    "systemPrompt": ""
+    "systemPrompt": "",
+    "showThinking": false
   },
   "channels": {
     "telegram": {
       "enabled": false,
       "token": "",
       "allowFrom": [],
+      "allowShell": false,
+      "sharedMemory": false,
       "streamResponses": true
     }
   },
   "tools": {
-    "restrictToWorkspace": false
+    "sandboxLevel": "workspace",
+    "confirm": ["shell_exec", "write_file", "code_edit"],
+    "shellTimeout": 120,
+    "shellEnvAllow": [],
+    "blockedCommands": []
   },
   "memory": {
     "enabled": true,

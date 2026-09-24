@@ -1,6 +1,5 @@
 """Tests for AgentLoop — parallel execution, self-reflection, retry."""
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,19 +8,10 @@ import pytest
 
 from agent_mini.agent.loop import AgentLoop
 from agent_mini.agent.memory import Memory
+from agent_mini.agent.token_estimator import estimate_messages_tokens, num_ctx_for
+from agent_mini.providers.base import ChatResponse, ModelInfo, ToolCall
 
-
-@dataclass
-class FakeToolCall:
-    id: str
-    name: str
-    arguments: dict
-
-
-@dataclass
-class FakeResponse:
-    content: str = ""
-    tool_calls: list = field(default_factory=list)
+FakeResponse, FakeToolCall = ChatResponse, ToolCall
 
 
 @pytest.fixture
@@ -156,7 +146,7 @@ async def test_max_iterations(config, memory):
     agent = _make_agent(config, memory, responses)
     conversation = []
     result = await agent.run("loop forever", conversation)
-    assert "maximum iterations" in result.lower()
+    assert "max iterations" in result.lower()
     await agent.close()
 
 
@@ -324,4 +314,240 @@ async def test_max_iterations_respects_user_config(config, memory):
     config["agent"]["maxIterations"] = 42
     agent = _make_agent(config, memory, [])
     assert agent.max_iterations == 42
+    await agent.close()
+
+
+# ── Finish reason (drives CLI exit codes) ───────────────────────────
+
+
+async def test_finish_reason_text(config, memory):
+    agent = _make_agent(config, memory, [FakeResponse(content="done")])
+    await agent.run("hi", [])
+    assert agent.finish_reason == "text"
+    await agent.close()
+
+
+async def test_finish_reason_max_iterations(config, memory):
+    config["agent"]["maxIterations"] = 1
+    call = FakeToolCall(id="tc1", name="list_directory", arguments={"path": "."})
+    agent = _make_agent(config, memory, [FakeResponse(tool_calls=[call])])
+    await agent.run("loop", [])
+    assert agent.finish_reason == "max_iterations"
+    await agent.close()
+
+
+async def test_finish_reason_provider_error(config, memory):
+    agent = _make_agent(config, memory, [ValueError("model not found")])
+    result = await agent.run("hi", [])
+    assert result.startswith("Error communicating with LLM")
+    assert agent.finish_reason == "provider_error"
+    await agent.close()
+
+
+# ── Temperature (B6) ────────────────────────────────────────────────
+
+
+async def test_null_temperature_is_passed_through(config, memory):
+    config["agent"]["temperature"] = None
+    agent = _make_agent(config, memory, [FakeResponse(content="ok")])
+    await agent.run("hi", [])
+    assert agent.provider.chat.call_args.kwargs["temperature"] is None
+    await agent.close()
+
+
+async def test_tier_override_changes_budgets(config, memory):
+    config["agent"] = {"tier": "cloud"}
+    agent = _make_agent(config, memory, [])
+    assert agent.profile.tier == "cloud"
+    assert agent.max_iterations == 25
+    await agent.close()
+
+
+# ── Model switching and detection (B2, B16, F7) ─────────────────────
+
+
+async def test_num_ctx_is_requested_from_the_provider(config, memory):
+    agent = _make_agent(config, memory, [])
+    expected = num_ctx_for(agent.profile, agent.tools.get_tool_defs())
+    assert agent.provider.context_window == expected
+    assert expected % 2048 == 0 and expected > agent.profile.context
+    await agent.close()
+
+
+async def test_set_provider_recomputes_budgets(memory, tmp_path):
+    ws = tmp_path / "ws"
+    agent = _make_agent({"workspace": str(ws)}, memory, [])
+    old = agent.provider
+    new = AsyncMock()
+    new.model_name = "llama3.1:70b"
+    await agent.set_provider(new)
+    assert agent.profile.tier == "large"
+    assert agent.max_iterations == 25
+    assert new.context_window == num_ctx_for(agent.profile, agent.tools.get_tool_defs())
+    old.close.assert_awaited_once()
+    await agent.close()
+
+
+async def test_detect_model_uses_reported_size_and_context(memory, tmp_path):
+    agent = _make_agent({"workspace": str(tmp_path / "ws")}, memory, [])
+    agent.provider.model_info = AsyncMock(
+        return_value=ModelInfo(params_b=0.6, context_length=4096, capabilities=["tools"])
+    )
+    await agent.detect_model()
+    assert agent.profile.tier == "tiny"
+    assert agent.provider.context_window == 4096
+    assert agent.profile.context < 4096
+    await agent.close()
+
+
+# ── Text tool calls (F4) ────────────────────────────────────────────
+
+
+async def test_tool_call_written_as_text_is_executed(config, memory):
+    (Path(config["workspace"]) / "a.txt").write_text("from disk")
+    responses = [
+        FakeResponse(content='<tool_call>{"name": "read_file", "arguments": {"path": "a.txt"}}</tool_call>'),
+        FakeResponse(content="done"),
+    ]
+    agent = _make_agent(config, memory, responses)
+    assert await agent.run("read a.txt", []) == "done"
+    second = agent.provider.chat.call_args_list[1][0][0]
+    assert any(m["role"] == "tool" and m["content"] == "from disk" for m in second)
+    assert agent.text_tool_calls == 1
+    await agent.close()
+
+
+# ── Loop detection and graceful stops (B13, B14, B15) ───────────────
+
+
+async def test_repeated_calls_nudge_then_stop(config, memory):
+    config["agent"]["maxIterations"] = 20
+    call = FakeResponse(tool_calls=[FakeToolCall(id="tc", name="list_directory", arguments={})])
+    agent = _make_agent(config, memory, [call] * 8 + [FakeResponse(content="I kept listing files.")])
+    result = await agent.run("loop", [])
+    assert agent.finish_reason == "stuck"
+    assert result.startswith("I kept listing files.")
+    fifth_call = agent.provider.chat.call_args_list[4][0][0]
+    assert "repeated the same tool call" in fifth_call[-1]["content"]
+    # The final answer is requested without tools.
+    assert agent.provider.chat.call_args_list[-1].kwargs["tools"] is None
+    await agent.close()
+
+
+async def test_max_iterations_returns_a_summary(config, memory):
+    config["agent"]["maxIterations"] = 2
+    ws = Path(config["workspace"])
+    (ws / "a.txt").write_text("a")
+    (ws / "b.txt").write_text("b")
+    responses = [
+        FakeResponse(tool_calls=[FakeToolCall(id="1", name="read_file", arguments={"path": "a.txt"})]),
+        FakeResponse(tool_calls=[FakeToolCall(id="2", name="read_file", arguments={"path": "b.txt"})]),
+        FakeResponse(content="Read both files; still need to compare them."),
+    ]
+    agent = _make_agent(config, memory, responses)
+    conversation: list[dict] = []
+    result = await agent.run("compare", conversation)
+    assert result.startswith("Read both files")
+    assert agent.finish_reason == "max_iterations"
+    assert "[tools used: read_file(a.txt), read_file(b.txt)]" in conversation[1]["content"]
+    await agent.close()
+
+
+async def test_provider_error_records_the_turn(config, memory):
+    agent = _make_agent(config, memory, [ValueError("boom")])
+    conversation: list[dict] = []
+    await agent.run("hi", conversation)
+    assert [m["role"] for m in conversation] == ["user", "assistant"]
+    await agent.close()
+
+
+async def test_no_retry_after_text_was_streamed(config, memory):
+    agent = _make_agent(config, memory, [])
+
+    async def flaky(messages, on_delta, **kwargs):
+        await on_delta("partial")
+        raise httpx.ConnectError("dropped")
+
+    agent.provider.chat_stream = AsyncMock(side_effect=flaky)
+    with patch("agent_mini.agent.loop.asyncio.sleep", new_callable=AsyncMock):
+        result = await agent.run("hi", [], on_stream=AsyncMock())
+    assert result.startswith("Error communicating with LLM")
+    assert agent.provider.chat_stream.await_count == 1
+    await agent.close()
+
+
+async def test_thinking_callback_reaches_the_provider(config, memory):
+    agent = _make_agent(config, memory, [FakeResponse(content="ok")])
+    on_thinking = AsyncMock()
+    await agent.run("hi", [], on_stream=AsyncMock(), on_thinking=on_thinking)
+    assert agent.provider.chat_stream.call_args.kwargs["on_thinking"] is on_thinking
+    await agent.close()
+
+
+async def test_tool_trace_saved_with_the_reply(config, memory):
+    (Path(config["workspace"]) / "t.txt").write_text("x")
+    responses = [
+        FakeResponse(tool_calls=[FakeToolCall(id="1", name="read_file", arguments={"path": "t.txt"})]),
+        FakeResponse(content="It says x."),
+    ]
+    agent = _make_agent(config, memory, responses)
+    conversation: list[dict] = []
+    assert await agent.run("what's in t.txt?", conversation) == "It says x."
+    assert conversation[1]["content"] == "It says x.\n\n[tools used: read_file(t.txt)]"
+    await agent.close()
+
+
+# ── Context budget (B11, B12) ───────────────────────────────────────
+
+
+async def test_prune_stubs_oldest_results_to_fit_budget(config, memory):
+    agent = _make_agent(config, memory, [])
+    messages = [{"role": "system", "content": "sys"}]
+    for i in range(5):
+        messages.append({"role": "assistant", "content": "", "tool_calls": []})
+        messages.append({"role": "tool", "tool_call_id": f"t{i}", "name": "read_file", "content": "Y" * 8000})
+
+    pruned = agent._prune_tool_results(messages)
+    assert pruned[2]["content"].startswith("[cleared to save context: read_file")
+    assert pruned[-1]["content"] == "Y" * 8000  # the latest round is never cleared
+    assert estimate_messages_tokens(pruned) <= agent.profile.context
+    assert messages[2]["content"] == "Y" * 8000  # input untouched
+    await agent.close()
+
+
+async def test_prune_trims_old_results_even_below_the_old_threshold(memory, tmp_path):
+    """Tiny tier caps output at 2000 chars; older results must still shrink."""
+    ws = tmp_path / "ws"
+    agent = _make_agent({"workspace": str(ws), "agent": {"tier": "tiny"}}, memory, [])
+    messages = []
+    for i in range(4):
+        messages.append({"role": "assistant", "content": "", "tool_calls": []})
+        messages.append({"role": "tool", "tool_call_id": f"t{i}", "name": "x", "content": "Z" * 1900})
+    pruned = agent._prune_tool_results(messages)
+    assert len(pruned[1]["content"]) < 1900
+    await agent.close()
+
+
+async def test_summarize_keeps_the_latest_exchange(config, memory):
+    agent = _make_agent(config, memory, [FakeResponse(content="summary")])
+    conversation = [
+        {"role": "user", "content": "write a long essay"},
+        {"role": "assistant", "content": "w" * 40000},
+    ]
+    await agent._summarize_history(conversation)
+    assert conversation[1]["content"] == "w" * 40000
+    agent.provider.chat.assert_not_called()
+    await agent.close()
+
+
+async def test_summarize_starts_kept_history_on_a_user_turn(config, memory):
+    agent = _make_agent(config, memory, [FakeResponse(content="summary")])
+    conversation = [{"role": "user", "content": "[Previous context summary]\n" + "s" * 900}]
+    for i in range(12):
+        conversation.append({"role": "assistant" if i % 2 == 0 else "user", "content": f"m{i} " + "x" * 2000})
+    await agent._summarize_history(conversation)
+    assert conversation[0]["content"] == "[Previous context summary]\nsummary"
+    assert conversation[1]["role"] == "user"
+    request = agent.provider.chat.call_args[0][0][1]["content"]
+    assert "s" * 900 in request  # the earlier summary is carried over whole
     await agent.close()

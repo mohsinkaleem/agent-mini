@@ -6,9 +6,7 @@ from agent_mini.agent.token_estimator import (
     classify_model_tier,
     estimate_messages_tokens,
     estimate_tokens,
-    get_effective_context,
-    get_output_limit,
-    get_tier_max_iterations,
+    get_profile,
 )
 
 
@@ -73,39 +71,68 @@ class TestClassifyModelTier:
             ("gemini-2.0-flash", "cloud"),
             ("gpt-4o-mini", "cloud"),
             ("gpt-4.1-mini", "cloud"),
-            # P4: large sizes must not fall through to small.
-            ("llama3.1:70b", "cloud"),
-            ("qwen2.5:32b", "cloud"),
-            ("mixtral:8x7b", "cloud"),
+            # 20-72B open-weight models are "large"; bigger ones count as cloud.
+            ("llama3.1:70b", "large"),
+            ("qwen2.5:32b", "large"),
+            ("mixtral:8x7b", "large"),
             ("unknown-model", "small"),  # default
+            # B1: current model names
+            ("gpt-5", "cloud"),
+            ("gpt-5-mini", "cloud"),
+            ("o3", "cloud"),
+            ("o4-mini", "cloud"),
+            ("claude-sonnet-4", "cloud"),
+            ("gpt-oss:20b", "large"),
+            ("qwen3.5:27b", "large"),
+            ("gemma3:27b", "large"),
+            ("mistral-small:24b", "large"),
+            ("qwen3:30b-a3b", "large"),
+            ("gpt-oss:120b", "cloud"),
+            ("llama3.1:405b", "cloud"),
+            ("deepseek-r1:671b", "cloud"),
+            ("mixtral:8x22b", "cloud"),
+            ("qwen3:0.6b", "tiny"),
+            ("smollm2:135m", "tiny"),
+            ("qwen3:8b", "small"),
+            ("hf.co/bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M", "small"),
+            ("llama3.1", "small"),
         ],
     )
     def test_tiers(self, model, expected):
         assert classify_model_tier(model) == expected
 
 
-class TestGetEffectiveContext:
-    def test_small(self):
-        assert get_effective_context("qwen2.5:7b") == 6000
+class TestGetProfile:
+    def test_tier_override(self):
+        assert get_profile("qwen2.5:7b", {"tier": "cloud"}).tier == "cloud"
 
-    def test_cloud(self):
-        assert get_effective_context("gemini-2.0-flash") == 32000
+    def test_context_window_override(self):
+        profile = get_profile("qwen2.5:7b", {"contextWindow": 16000})
+        assert profile.tier == "small"
+        assert profile.context == 16000
 
-    def test_medium(self):
-        assert get_effective_context("qwen2.5:14b") == 12000
+    def test_invalid_tier_rejected(self):
+        with pytest.raises(ValueError, match="agent.tier"):
+            get_profile("qwen2.5:7b", {"tier": "huge"})
+
+    def test_large_between_medium_and_cloud(self):
+        medium, large, cloud = (
+            get_profile("qwen2.5:14b"), get_profile("qwen3.5:27b"), get_profile("gpt-5")
+        )
+        assert medium.context < large.context < cloud.context
+        assert medium.output_limit < large.output_limit < cloud.output_limit
 
 
-class TestGetTierMaxIterations:
-    def test_small_model(self):
-        assert get_tier_max_iterations("llama3.1:8b") == 15
+class TestProfileBudgets:
+    def test_context(self):
+        assert get_profile("qwen2.5:7b").context == 6000
+        assert get_profile("qwen2.5:14b").context == 12000
+        assert get_profile("gemini-2.0-flash").context == 32000
 
-    def test_cloud_model(self):
-        assert get_tier_max_iterations("gpt-4o-mini") == 25
+    def test_max_iterations(self):
+        assert get_profile("llama3.1:8b").max_iterations == 15
+        assert get_profile("gpt-4o-mini").max_iterations == 25
 
-
-class TestGetOutputLimit:
-    def test_small(self):
-        assert get_output_limit("qwen2.5:7b") == 4000
-
-    def test_cloud(self):
-        assert get_output_limit("gemini-2.0-flash") == 50000
+    def test_output_limit(self):
+        assert get_profile("qwen2.5:7b").output_limit == 4000
+        assert get_profile("gemini-2.0-flash").output_limit == 50000

@@ -74,3 +74,26 @@ def test_recall_empty_query(tmp_path: Path):
     mem.store("key", "value")
     result = mem.recall("   ")
     assert "No matching" in result
+
+
+def test_store_replaces_same_key(tmp_path: Path):
+    """O11: storing a key again updates it instead of adding a duplicate."""
+    mem = Memory(tmp_path / "mem.json")
+    assert mem.store("Editor", "vim") == "Stored memory: Editor"
+    assert mem.store("editor ", "helix") == "Updated memory: editor "
+    assert [(e["key"], e["value"]) for e in mem.get_recent(10)] == [("editor ", "helix")]
+
+
+def test_forget(tmp_path: Path):
+    mem = Memory(tmp_path / "mem.json")
+    mem.store("a", "1")
+    mem.store("b", "2")
+    assert mem.forget("A") == "Forgot memory: A"
+    assert mem.forget("missing").startswith("No memory")
+    assert [e["key"] for e in Memory(tmp_path / "mem.json").get_recent(10)] == ["b"]
+
+
+def test_memory_file_is_private(tmp_path: Path):
+    mem = Memory(tmp_path / "mem.json")
+    mem.store("k", "v")
+    assert (tmp_path / "mem.json").stat().st_mode & 0o777 == 0o600

@@ -1,0 +1,18 @@
+id = "shell_pipeline"
+category = "shell"
+timeout_seconds = 120
+prompt = """
+Create three text files in this workspace: `a.txt` with content "10",
+`b.txt` with content "20", and `c.txt` with content "12". Then use
+shell commands (e.g. `cat ... | sort -n | tail -1`) to compute the
+largest of the three numbers and write it to `max.txt`.
+"""
+
+[[checks]]
+description = "all four files exist"
+shell = "test -f a.txt -a -f b.txt -a -f c.txt -a -f max.txt"
+
+[[checks]]
+description = "max.txt contains exactly 20"
+shell = "cat max.txt"
+expect_exact = "20"
