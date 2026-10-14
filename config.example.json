@@ -3,26 +3,42 @@
   "providers": {
     "ollama": {
       "baseUrl": "http://localhost:11434",
-      "model": "qwen3:8b",
+      "model": "qwen3.5:9b",
       "think": false,
       "numCtx": null,
       "keepAlive": null
     },
     "openai": {
+      "baseUrl": "https://api.openai.com/v1",
       "apiKey": "",
-      "model": "gpt-5-mini"
+      "model": "gpt-5-mini",
+      "reasoningEffort": null
     },
     "local": {
       "baseUrl": "http://localhost:8080/v1",
-      "apiKey": "no-key",
-      "model": "local-model"
+      "apiKey": "",
+      "model": "local-model",
+      "reasoningEffort": null
     }
   },
   "agent": {
+    "tier": null,
+    "contextWindow": null,
     "maxIterations": null,
-    "temperature": 0.7,
+    "temperature": null,
     "systemPrompt": "",
     "showThinking": false
+  },
+  "tools": {
+    "sandboxLevel": "workspace",
+    "confirm": [],
+    "shellTimeout": 120,
+    "shellEnvAllow": [],
+    "blockedCommands": []
+  },
+  "memory": {
+    "enabled": true,
+    "maxEntries": 1000
   },
   "channels": {
     "telegram": {
@@ -33,17 +49,6 @@
       "sharedMemory": false,
       "streamResponses": true
     }
-  },
-  "tools": {
-    "sandboxLevel": "workspace",
-    "confirm": ["shell_exec", "write_file", "code_edit"],
-    "shellTimeout": 120,
-    "shellEnvAllow": [],
-    "blockedCommands": []
-  },
-  "memory": {
-    "enabled": true,
-    "maxEntries": 1000
   },
   "workspace": "~/.agent-mini/workspace"
 }

@@ -6,7 +6,6 @@ import json
 import logging
 import re
 import uuid
-from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -104,19 +103,14 @@ def parse_arguments(raw: Any) -> dict:
 
 def parse_openai_tool_calls(raw: list[dict] | None) -> list[ToolCall] | None:
     """Convert OpenAI-style tool calls into ``ToolCall`` objects."""
-    if not raw:
-        return None
-
-    calls: list[ToolCall] = []
-    for tc in raw:
-        func = tc.get("function", {})
-        calls.append(
-            ToolCall(
-                id=tc.get("id") or new_call_id(),
-                name=func.get("name", ""),
-                arguments=parse_arguments(func.get("arguments", {})),
-            )
+    calls = [
+        ToolCall(
+            id=tc.get("id") or new_call_id(),
+            name=tc.get("function", {}).get("name") or "",
+            arguments=parse_arguments(tc.get("function", {}).get("arguments", {})),
         )
+        for tc in raw or []
+    ]
     return calls or None
 
 
@@ -206,57 +200,30 @@ async def raise_for_status(
     )
 
 
-class BaseProvider(ABC):
-    """Abstract base for LLM providers.
+class Provider:
+    """An LLM endpoint. Subclasses turn its wire format into ``ChatResponse``."""
 
-    Every provider must convert its native response into a ``ChatResponse``
-    so the agent loop stays provider-agnostic.
-    """
-
+    name = "provider"
     # Context size the agent wants the server to allocate (Ollama num_ctx).
     context_window: int | None = None
 
-    async def model_info(self) -> ModelInfo | None:
-        """Size, context length and capabilities as reported by the server, if supported."""
-        return None
+    def __init__(self, model: str):
+        self.model = model
 
-    @abstractmethod
     async def chat(
         self,
         messages: list[dict],
         tools: list[dict] | None = None,
-        temperature: float | None = 0.7,
-    ) -> ChatResponse:
-        """Send messages to the LLM and return a response."""
-        ...
-
-    async def chat_stream(
-        self,
-        messages: list[dict],
-        on_delta: StreamCallback,
-        tools: list[dict] | None = None,
-        temperature: float | None = 0.7,
+        temperature: float | None = None,
+        on_delta: StreamCallback | None = None,
         on_thinking: StreamCallback | None = None,
     ) -> ChatResponse:
-        """Stream text deltas when supported; fallback to non-streaming."""
-        response = await self.chat(messages, tools=tools, temperature=temperature)
-        if response.thinking and on_thinking:
-            await on_thinking(response.thinking)
-        if response.content:
-            await on_delta(response.content)
-        return response
+        """One completion. With *on_delta*, text (and thinking) deltas are passed on as they arrive."""
+        raise NotImplementedError
+
+    async def model_info(self) -> ModelInfo | None:
+        """Size, context length and capabilities as reported by the server, if it can tell."""
+        return None
 
     async def close(self) -> None:
-        """Clean up resources (e.g. HTTP clients). Override if needed."""
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Human-readable provider name."""
-        ...
-
-    @property
-    @abstractmethod
-    def model_name(self) -> str:
-        """Currently configured model name."""
-        ...
+        """Release HTTP clients."""

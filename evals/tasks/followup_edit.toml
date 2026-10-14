@@ -1,0 +1,10 @@
+id = "followup_edit"
+category = "multi_step"
+timeout_seconds = 180
+followups = ["Now add a function sub(a, b) to calc.py that returns a - b. Keep add."]
+solution = '''printf 'def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n' > calc.py'''
+prompt = "Create calc.py with a function add(a, b) that returns a + b."
+
+[[checks]]
+description = "add and sub both work"
+shell = '''{python} -c "from calc import add, sub; assert add(2, 3) == 5 and sub(5, 3) == 2"'''

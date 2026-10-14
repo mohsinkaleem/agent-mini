@@ -1,0 +1,23 @@
+id = "log_tail"
+category = "robustness"
+timeout_seconds = 120
+max_tool_calls = 4
+setup_shell = '''{python} -c "
+import random
+random.seed(11)
+lines = []
+for i in range(3000):
+    if i == 2950:
+        lines.append(f'2026-05-01 12:{i // 60 % 60:02d}:{i % 60:02d} ERROR payment failed code=E4521 req={i}')
+    elif i < 2950 and random.random() < 0.02:
+        lines.append(f'2026-05-01 12:{i // 60 % 60:02d}:{i % 60:02d} ERROR timeout code=E{random.randint(1000, 3999)} req={i}')
+    else:
+        lines.append(f'2026-05-01 12:{i // 60 % 60:02d}:{i % 60:02d} INFO request ok req={i}')
+open('app.log', 'w').write('\n'.join(lines) + '\n')
+"'''
+solution_answer = "E4521"
+prompt = "app.log is a large log file. What is the error code on the LAST line that contains ERROR? Reply with just the code (like E1234)."
+
+[[checks]]
+description = "answers E4521"
+expect_regex = '\bE4521\b'

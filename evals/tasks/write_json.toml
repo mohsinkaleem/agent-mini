@@ -1,0 +1,14 @@
+id = "write_json"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 3
+solution = '''printf '{"name": "demo", "port": 8080, "debug": false}\n' > config.json'''
+prompt = "Create config.json with exactly these keys: name = \"demo\" (a string), port = 8080 (a number), debug = false (a boolean)."
+
+[[checks]]
+description = "valid JSON with the right types"
+shell = '''{python} -c "
+import json, sys
+got = json.load(open('config.json'))
+sys.exit(0 if got == {'name': 'demo', 'port': 8080, 'debug': False} else f'got: {got}')
+"'''

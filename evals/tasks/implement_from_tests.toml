@@ -1,0 +1,17 @@
+id = "implement_from_tests"
+category = "multi_step"
+setup = "fixtures/slugify"
+timeout_seconds = 240
+fixture_unchanged = ["tests"]
+solution = '''cat > src/slug.py <<'PY'
+import re
+
+
+def slugify(text: str) -> str:
+    return "-".join(re.findall(r"[a-z0-9]+", text.lower()))
+PY'''
+prompt = "The tests in tests/ describe a slugify function. Implement it in src/slug.py so that `python -m pytest -q` passes. Do not change the tests."
+
+[[checks]]
+description = "tests pass"
+shell = "{python} -m pytest -q"

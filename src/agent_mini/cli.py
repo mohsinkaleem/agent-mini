@@ -1,4 +1,4 @@
-"""CLI entry-point — init, chat, gateway, doctor."""
+"""Command line: init, chat, doctor, gateway."""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ import asyncio
 import json
 import logging
 import os
-import re
 import shutil
 import signal
 import sys
 import time
+from pathlib import Path
 
 import click
 import httpx
@@ -25,307 +25,168 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
-from .config import (
-    CONFIG_DIR,
-    CONFIG_FILE,
-    DEFAULT_WORKSPACE,
-    MEMORY_FILE,
-    load_config,
-    save_config,
-)
-from .sessions import (
-    generate_session_id,
-    list_sessions,
-    load_session,
-    save_session,
-)
+from .config import DEFAULTS, PROVIDERS, agent_home, config_file, read_config, save_config, with_defaults
+from .sessions import generate_session_id, list_sessions, load_session, save_session
 
+# The UI: header, tool lines, spinner, prompts. With -m into a pipe it moves to
+# stderr, so stdout holds only the reply.
 console = Console()
-# Turn stats in -m mode go here so stdout holds only the reply.
+reply_console = Console()
 err_console = Console(stderr=True)
 
-# Third-party loggers that would otherwise spam the chat UI with one line
-# per HTTP request. Only unmuted with --verbose.
-_NOISY_LOGGERS = ("httpx", "httpcore", "urllib3", "asyncio", "telegram")
+# Exit codes for `chat -m`, so scripts and the eval harness can tell
+# "wrong answer" from "never finished" from "provider down".
+EXIT_OK, EXIT_MAX_ITERATIONS, EXIT_PROVIDER_ERROR, EXIT_STUCK, EXIT_CANCELLED = 0, 2, 3, 4, 130
+_EXIT_CODES = {"max_iterations": EXIT_MAX_ITERATIONS, "provider_error": EXIT_PROVIDER_ERROR, "stuck": EXIT_STUCK}
+_FILE_TOOLS = ("write_file", "edit_file")
 
 
 def _setup_logging(verbose: bool = False) -> None:
-    """Route logs through Rich so they blend with the chat UI.
-
-    Only ``agent-mini``'s own logger is chatty by default; everything else
-    is muted below WARNING so the transcript stays readable.
-    """
+    """Logs go through Rich. Only agent-mini's own logger talks unless --verbose."""
     logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.WARNING,
-        format="%(message)s",
-        handlers=[
-            RichHandler(
-                console=console,
-                show_time=verbose,
-                show_path=verbose,
-                markup=False,
-                rich_tracebacks=True,
-            )
-        ],
-        force=True,
+        level=logging.DEBUG if verbose else logging.WARNING, format="%(message)s", force=True,
+        handlers=[RichHandler(console=console, show_time=verbose, show_path=verbose, markup=False)],
     )
-    logging.getLogger("agent-mini").setLevel(
-        logging.DEBUG if verbose else logging.INFO
-    )
+    logging.getLogger("agent-mini").setLevel(logging.DEBUG if verbose else logging.INFO)
     if not verbose:
-        for name in _NOISY_LOGGERS:
+        for name in ("httpx", "httpcore", "asyncio", "telegram"):
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
-# ======================================================================
-# Top-level group
-# ======================================================================
+def _load(overrides: dict | None = None) -> dict:
+    """The user's config with *overrides* and defaults applied. Exits cleanly when it is missing or invalid."""
+    try:
+        raw = read_config()
+    except json.JSONDecodeError as e:
+        console.print(f"[red]{config_file()} is not valid JSON: {escape(str(e))}[/red]")
+        raise SystemExit(1) from None
+    if raw is None:
+        console.print("[red]No config found. Run 'agent-mini init' first.[/red]")
+        raise SystemExit(1)
+    for path, value in (overrides or {}).items():
+        node = raw
+        *parents, leaf = path.split(".")
+        for key in parents:
+            node = node.setdefault(key, {})
+        node[leaf] = value
+    try:
+        return with_defaults(raw)
+    except ValueError as e:
+        console.print(f"[red]Config error: {escape(str(e))}[/red]\n[dim]Fix it in {config_file()}[/dim]")
+        raise SystemExit(1) from None
+
+
+def _build_agent(config: dict):
+    from .loop import AgentLoop
+    from .memory import Memory
+    from .providers import create_provider
+
+    memory = Memory(agent_home() / "memory.json", max_entries=config["memory"]["maxEntries"])
+    try:
+        return AgentLoop(create_provider(config), config, memory)
+    except ValueError as e:
+        console.print(f"[red]Config error: {escape(str(e))}[/red]\n[dim]Fix it in {config_file()}[/dim]")
+        raise SystemExit(1) from None
+
+
+async def _detect_model(agent) -> None:
+    """Refine budgets from what the server reports; warn when the model can't call tools."""
+    info = await agent.detect_model()
+    if info and info.capabilities is not None and "tools" not in info.capabilities:
+        console.print(f"[yellow]⚠ {escape(agent.provider.model)} does not report tool support. Tool calls "
+                      "may fail; agent-mini will try to parse calls written as text.[/yellow]")
 
 
 @click.group()
 @click.version_option(__version__, prog_name="agent-mini")
 def cli():
-    """Agent Mini — ultra-lightweight personal AI agent."""
+    """Agent Mini: a small local-first AI agent."""
 
 
-# ======================================================================
-# init
-# ======================================================================
+# ── init ─────────────────────────────────────────────────────────────
 
 
 @cli.command()
 def init():
-    """Initialise config and workspace with interactive onboarding."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
-
-    if CONFIG_FILE.exists():
-        console.print(f"[yellow]Config already exists at {CONFIG_FILE}[/yellow]")
-        overwrite = click.confirm("Overwrite with a fresh config?", default=False)
-        if not overwrite:
-            console.print("[dim]Keeping existing config.[/dim]")
-            return
-
-    console.print(Panel(
-        "[bold green]Agent Mini[/bold green] — Setup Wizard",
-        border_style="green",
-        padding=(0, 1),
-    ))
-    console.print()
-
-    # ── Step 1: Provider ────────────────────────────────────────────
-    console.print("[bold]1. Choose your LLM provider[/bold]\n")
-    providers = [
-        ("ollama", "Local models via Ollama (recommended)"),
-        ("openai", "OpenAI API (GPT-4o, o1, etc.)"),
-        ("local", "Any OpenAI-compatible server (LM Studio, vLLM, llama.cpp)"),
-    ]
-    for i, (name, desc) in enumerate(providers, 1):
-        console.print(f"  [cyan]{i}[/cyan]) [bold]{name}[/bold] — {desc}")
-    console.print()
-
-    choice = click.prompt(
-        "Select provider",
-        type=click.IntRange(1, len(providers)),
-        default=1,
-    )
-    provider_name = providers[choice - 1][0]
-    console.print(f"  → [green]{provider_name}[/green]\n")
-
-    # ── Step 2: Provider-specific config ────────────────────────────
-    console.print("[bold]2. Provider settings[/bold]\n")
-
-    providers_cfg: dict = {}
-
-    if provider_name == "ollama":
-        base_url = click.prompt(
-            "  Ollama base URL",
-            default="http://localhost:11434",
-        )
-        model = click.prompt("  Model name", default="llama3.1")
-        think = click.confirm("  Enable thinking mode?", default=False)
-        providers_cfg["ollama"] = {
-            "baseUrl": base_url,
-            "model": model,
-            "think": think,
-        }
-
-    elif provider_name == "openai":
-        api_key = click.prompt("  OpenAI API key", hide_input=True)
-        model = click.prompt("  Model name", default="gpt-4o")
-        providers_cfg["openai"] = {"apiKey": api_key, "model": model}
-
-    elif provider_name == "local":
-        base_url = click.prompt(
-            "  Server base URL",
-            default="http://localhost:8080/v1",
-        )
-        api_key = click.prompt("  API key (or 'no-key')", default="no-key")
-        model = click.prompt("  Model name", default="local-model")
-        providers_cfg["local"] = {
-            "baseUrl": base_url,
-            "apiKey": api_key,
-            "model": model,
-        }
-
-    console.print()
-
-    # ── Step 3: Workspace ───────────────────────────────────────────
-    console.print("[bold]3. Workspace[/bold]\n")
-    workspace = click.prompt(
-        "  Workspace directory",
-        default=str(DEFAULT_WORKSPACE),
-    )
-    console.print()
-
-    # ── Step 4: Memory ──────────────────────────────────────────────
-    console.print("[bold]4. Memory[/bold]\n")
-    memory_enabled = click.confirm("  Enable persistent memory?", default=True)
-    console.print()
-
-    # ── Step 5: Safety ────────────────────────────────────────────────────
-    console.print("[bold]5. Safety[/bold]\n")
-    ask_first = click.confirm(
-        "  Ask before running shell commands and changing files?", default=True
-    )
-    console.print()
-
-    # ── Step 6: Telegram (optional) ─────────────────────────────────
-    console.print("[bold]6. Telegram gateway (optional)[/bold]\n")
-    telegram_enabled = click.confirm("  Set up Telegram bot?", default=False)
-    telegram_cfg = {
-        "enabled": False,
-        "token": "",
-        "allowFrom": [],
-        "streamResponses": True,
-    }
-    if telegram_enabled:
-        tg_token = click.prompt("  Bot token (from @BotFather)")
-        console.print(
-            "  [yellow]If you leave the next field blank, ANYONE who finds the bot can use it.[/yellow]\n"
-            "  [dim]A public bot runs read-only (no shell, no file writes) unless you set\n"
-            "  channels.telegram.allowShell: true. Prefer numeric user IDs over usernames:\n"
-            "  usernames can be changed and then claimed by someone else. Message\n"
-            "  @userinfobot on Telegram to get your ID.[/dim]"
-        )
-        tg_users = click.prompt(
-            "  Allowed numeric user IDs (comma-separated, blank = public)",
-            default="",
-        )
-        allow_list = [u.strip() for u in tg_users.split(",") if u.strip()]
-        telegram_cfg = {
-            "enabled": True,
-            "token": tg_token,
-            "allowFrom": allow_list,
-            "streamResponses": True,
-        }
-    console.print()
-
-    # ── Build & save config (only the choices; everything else uses code defaults) ──
-    config = {
-        "provider": provider_name,
-        "providers": providers_cfg,
-        "channels": {"telegram": telegram_cfg},
-        "tools": {
-            "sandboxLevel": "workspace",
-            "confirm": list(_DIFF_TOOLS) + ["shell_exec"] if ask_first else [],
-        },
-        "memory": {"enabled": memory_enabled},
+    """Create the config and workspace, asking a few questions."""
+    path = config_file()
+    if path.exists() and not click.confirm(f"{path} already exists. Overwrite it?", default=False):
+        console.print("[dim]Keeping the existing config.[/dim]")
+        return
+    console.print(Panel("[bold green]Agent Mini[/bold green] setup", border_style="green", padding=(0, 1)))
+    choices = [("ollama", "local models via Ollama (recommended)"), ("openai", "OpenAI API"),
+               ("local", "any OpenAI-compatible server: LM Studio, vLLM, llama.cpp")]
+    for i, (name, desc) in enumerate(choices, 1):
+        console.print(f"  [cyan]{i}[/cyan]) [bold]{name}[/bold]: {desc}")
+    name = choices[click.prompt("Provider", type=click.IntRange(1, len(choices)), default=1) - 1][0]
+    defaults = DEFAULTS["providers"][name]
+    chosen: dict = {}
+    if name != "openai":
+        chosen["baseUrl"] = click.prompt("Server URL", default=defaults["baseUrl"])
+    chosen["model"] = click.prompt("Model", default=defaults["model"])
+    if name != "ollama":
+        key = click.prompt("API key (blank: read AGENT_MINI_API_KEY / OPENAI_API_KEY)", default="",
+                           hide_input=True, show_default=False)
+        if key:
+            chosen["apiKey"] = key
+    workspace = click.prompt("Workspace directory", default=str(agent_home() / "workspace"))
+    ask = click.confirm("Ask before running shell commands and changing files?", default=True)
+    Path(workspace).expanduser().mkdir(parents=True, exist_ok=True)
+    save_config({
+        "provider": name,
+        "providers": {name: chosen},
         "workspace": workspace,
-    }
-    save_config(config)
-
-    console.print(Panel(
-        f"[green]✓ Config saved → {CONFIG_FILE}[/green]\n"
-        f"[green]✓ Workspace  → {workspace}[/green]",
-        border_style="green",
-        padding=(0, 1),
-    ))
-    console.print()
-    console.print("[bold]Ready![/bold] Start chatting:")
-    console.print("  [cyan]agent-mini chat[/cyan]")
-    if telegram_enabled:
-        console.print("  [cyan]agent-mini gateway[/cyan]  (start Telegram bot)")
+        "tools": {"confirm": ["shell", *_FILE_TOOLS] if ask else []},
+    })
+    console.print(f"\n[green]✓ Config saved to {path}[/green]\nNext: [cyan]agent-mini doctor[/cyan], then "
+                  "[cyan]agent-mini chat[/cyan]. Every other setting is in the README.")
 
 
-# ======================================================================
-# chat  (interactive or single-shot)
-# ======================================================================
-
-# Exit codes for single-shot runs, so scripts and the eval harness can tell
-# "wrong answer" from "never finished" from "provider down".
-EXIT_OK = 0
-EXIT_MAX_ITERATIONS = 2
-EXIT_PROVIDER_ERROR = 3
-EXIT_STUCK = 4
-EXIT_CANCELLED = 130
-_FINISH_EXIT_CODES = {
-    "max_iterations": EXIT_MAX_ITERATIONS,
-    "provider_error": EXIT_PROVIDER_ERROR,
-    "stuck": EXIT_STUCK,
-}
+# ── chat ─────────────────────────────────────────────────────────────
 
 
 @cli.command()
-@click.option("-m", "--message", default=None, help="Single message (non-interactive). '-' reads stdin.")
-@click.option("-v", "--verbose", is_flag=True, help="Show debug logs.")
-@click.option("--no-markdown", is_flag=True, help="Plain-text output.")
+@click.option("-m", "--message", default=None, help="Send one message and exit. '-' reads stdin.")
 @click.option("-s", "--session", default=None, help="Resume a session by ID.")
-@click.option(
-    "--workspace",
-    default=None,
-    help="Override workspace directory for this run (isolates eval / one-shot tasks).",
-)
-@click.option("--provider", "provider_name", default=None, help="Override the provider for this run.")
-@click.option("--model", default=None, help="Override the model for this run.")
-@click.option("-y", "--yes", is_flag=True, help="Approve every tool call without asking (tools.confirm).")
+@click.option("--workspace", default=None, help="Workspace directory for this run (also AGENT_MINI_WORKSPACE).")
+@click.option("--provider", "provider_name", default=None, help="Provider for this run.")
+@click.option("--model", default=None, help="Model for this run.")
+@click.option("-y", "--yes", is_flag=True, help="Approve every tool call without asking.")
 @click.option("--no-stream", is_flag=True, help="Show the answer only once it is complete.")
 @click.option("--show-thinking", is_flag=True, help="Stream the model's thinking (dimmed).")
-def chat(
-    message: str | None,
-    verbose: bool,
-    no_markdown: bool,
-    session: str | None,
-    workspace: str | None,
-    provider_name: str | None,
-    model: str | None,
-    yes: bool,
-    no_stream: bool,
-    show_thinking: bool,
-):
+@click.option("--no-markdown", is_flag=True, help="Plain-text output.")
+@click.option("--report", "report_path", default=None, help="With -m: write a JSON report of the run here.")
+@click.option("-v", "--verbose", is_flag=True, help="Show debug logs.")
+def chat(message, session, workspace, provider_name, model, yes, no_stream, show_thinking, no_markdown,
+         report_path, verbose):
     """Chat with the agent.
 
     With -m, exits 0 on success, 2 on max iterations, 3 on a provider error,
     4 when the agent got stuck repeating itself and 130 when interrupted.
     """
+    global console
+    if message and not reply_console.is_terminal:
+        console = err_console
     _setup_logging(verbose)
-    config = load_config()
-    if not config:
-        console.print("[red]No config found. Run 'agent-mini init' first.[/red]")
-        raise SystemExit(1)
+    overrides: dict = {}
+    if ws := workspace or os.environ.get("AGENT_MINI_WORKSPACE"):
+        overrides["workspace"] = ws
+    if provider_name:
+        overrides["provider"] = provider_name
+    if yes:
+        overrides["tools.confirm"] = []
+    config = _load(overrides)
+    if "workspace" in overrides and config["tools"]["sandboxLevel"] == "unrestricted":
+        config["tools"]["sandboxLevel"] = "workspace"  # a per-run workspace is a sandbox
+    if model:
+        config["providers"][config["provider"]]["model"] = model
     if message == "-":
         message = sys.stdin.read()
-    # CLI --workspace or AGENT_MINI_WORKSPACE env var overrides config,
-    # so callers (eval runner, scripts) can pin an isolated sandbox
-    # without touching ~/.agent-mini/config.json.
-    override = workspace or os.environ.get("AGENT_MINI_WORKSPACE")
-    if override:
-        config["workspace"] = override
-        # Force restrictToWorkspace when an override is provided so the
-        # agent stays inside the isolated dir.
-        config.setdefault("tools", {})["restrictToWorkspace"] = True
-    if provider_name:
-        config["provider"] = provider_name
-    if model:
-        prov = config.get("provider", "ollama")
-        config.setdefault("providers", {}).setdefault(prov, {})["model"] = model
-    if yes:
-        config.setdefault("tools", {})["confirm"] = []
-    # Streaming redraws the screen, so only do it on a real terminal.
-    stream = console.is_terminal and not no_stream
-    show_thinking = stream and (show_thinking or bool(config.get("agent", {}).get("showThinking")))
+    # Streaming redraws the screen, so only on a real terminal.
+    stream = reply_console.is_terminal and not no_stream
+    thinking = stream and (show_thinking or config["agent"]["showThinking"])
     try:
-        code = asyncio.run(_chat(config, message, no_markdown, session, stream, show_thinking))
+        code = asyncio.run(_chat(config, message, no_markdown, session, stream, thinking, report_path))
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted.[/yellow]")
         code = EXIT_CANCELLED
@@ -334,80 +195,27 @@ def chat(
 
 
 def _one_line(text: str, limit: int) -> str:
-    """Collapse whitespace, escape Rich markup, and clip *text* to *limit* chars.
-
-    Tool output routinely contains square brackets (``[dir]``, log lines,
-    JSON) which Rich would otherwise swallow as style tags.
-    """
+    """Whitespace collapsed, clipped, and escaped: tool output is full of [brackets] Rich would eat."""
     flat = " ".join(text.split())
-    if len(flat) > limit:
-        flat = flat[: limit - 1] + "…"
-    return escape(flat)
+    return escape(flat[: limit - 1] + "…" if len(flat) > limit else flat)
 
 
-def _format_tool_args(arguments: dict) -> str:
-    """Render tool arguments as compact ``key=value`` pairs.
-
-    Raw JSON is hard to scan in a terminal; this keeps the signal
-    (which file, which query) and drops the punctuation.
-    """
-    parts = []
-    for key, value in arguments.items():
-        raw = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-        parts.append(f"{key}={_one_line(raw, 60)}")
-    return "  ".join(parts)
-
-
-# Tool results are Markdown (web_search emits **bold** titles); the preview
-# line is plain text, so the syntax is just noise.
-_MD_NOISE = re.compile(r"\*\*|__|`+|^\s*#{1,6}\s*", re.MULTILINE)
-
-
-def _format_tool_result(preview: str) -> str:
-    """Render a tool result preview as a single clean line."""
-    return _one_line(_MD_NOISE.sub("", preview), 96)
-
-
-def _build_agent(config: dict):
-    """Create provider, memory and agent; exit cleanly on a config error."""
-    from .agent import AgentLoop, Memory
-    from .providers import create_provider
-
-    memory = Memory(
-        MEMORY_FILE,
-        max_entries=config.get("memory", {}).get("maxEntries", 1000),
+def _format_args(arguments: dict) -> str:
+    return "  ".join(
+        f"{k}={_one_line(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False), 60)}"
+        for k, v in arguments.items()
     )
-    try:
-        provider = create_provider(config)
-        agent = AgentLoop(provider, config, memory)
-    except ValueError as e:
-        console.print(f"[red]Config error: {escape(str(e))}[/red]")
-        console.print(f"[dim]Fix it in {CONFIG_FILE}[/dim]")
-        raise SystemExit(1) from None
-    return agent
-
-
-async def _detect_model(agent) -> None:
-    """Refine tier budgets from what the server reports; warn if the model can't call tools."""
-    info = await agent.detect_model()
-    if info and info.capabilities is not None and "tools" not in info.capabilities:
-        console.print(
-            f"[yellow]⚠ {escape(agent.provider.model_name)} does not report tool support. "
-            "Tool calls may fail; agent-mini will try to parse calls written as text.[/yellow]"
-        )
 
 
 class _TurnView:
-    """Spinner while waiting, live output while the answer streams, pauses for prompts."""
+    """A spinner while waiting, live text while the answer streams, and pauses for approval prompts."""
 
     def __init__(self, plain: bool):
         self._plain = plain
         self._status = console.status("[dim]Thinking…[/dim]", spinner="dots")
         self._live: Live | None = None
-        self._text = ""
-        self._thinking = ""
-        # The streamed text of the reply that ended the turn (not frozen earlier segments).
-        self.final_streamed = ""
+        self._text = self._thinking = ""
+        self.final_streamed = ""  # streamed text of the reply that ended the turn
 
     def __enter__(self) -> _TurnView:
         self._status.start()
@@ -419,9 +227,7 @@ class _TurnView:
         self._status.stop()
 
     def _renderable(self):
-        parts = []
-        if self._thinking:
-            parts.append(Text(self._thinking.strip(), style="dim italic"))
+        parts = [Text(self._thinking.strip(), style="dim italic")] if self._thinking else []
         if self._text:
             parts.append(Text(self._text) if self._plain else Markdown(self._text))
         return Group(*parts)
@@ -429,10 +235,8 @@ class _TurnView:
     def _show(self) -> None:
         if self._live is None:
             self._status.stop()
-            self._live = Live(
-                self._renderable(), console=console, refresh_per_second=8,
-                vertical_overflow="visible",
-            )
+            self._live = Live(self._renderable(), console=reply_console, refresh_per_second=8,
+                              vertical_overflow="visible")
             self._live.start()
         else:
             self._live.update(self._renderable())
@@ -451,53 +255,59 @@ class _TurnView:
         self._thinking += delta
         self._show()
 
-    def _freeze(self) -> None:
-        """Leave streamed text on screen and start a fresh segment."""
+    def status(self, text: str) -> None:
+        """Leave streamed text on screen (a tool is about to run) and show *text* on the spinner."""
         if self._live is not None:
             self._stop_live()
             self._text = self._thinking = ""
             self._status.start()
-
-    def status(self, text: str) -> None:
-        """Freeze any streamed text (a tool is about to run) and show *text* on the spinner."""
-        self._freeze()
         self._status.update(text)
 
     def pause(self) -> None:
-        self._freeze()
+        self.status("")
         self._status.stop()
 
     def resume(self) -> None:
         self._status.start()
 
 
-_DIFF_TOOLS = ("write_file", "code_edit")
-
-
 def _ask_approval(name: str, arguments: dict, tools, always: set[str]) -> bool:
-    """Prompt y / n / always / diff for a tool listed in tools.confirm. Empty answer = no."""
+    """Ask y / N / always / diff for a tool listed in tools.confirm. No answer means no."""
     console.print(f"  [yellow]?[/yellow] [bold]{name}[/bold] needs approval")
-    if name == "shell_exec":
+    if name == "shell":
         console.print(Text(f"    $ {arguments.get('command', '')}", style="bold"))
     else:
-        console.print(f"    [dim]{_format_tool_args(arguments)}[/dim]")
-    has_diff = name in _DIFF_TOOLS
+        console.print(f"    [dim]{_format_args(arguments)}[/dim]")
+    has_diff = name in _FILE_TOOLS
     choices = "[y]es / [N]o / [a]lways" + (" / [d]iff" if has_diff else "")
+    # asyncio's Ctrl+C handler can't interrupt a blocking input(): use Python's
+    # own while the prompt is open. Ctrl+C then means "no" (and the turn stops).
+    try:
+        previous = signal.signal(signal.SIGINT, signal.default_int_handler)
+    except ValueError:  # not the main thread
+        previous = None
+    try:
+        return _approval_answer(name, arguments, tools, always, has_diff, choices)
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
+
+
+def _approval_answer(name: str, arguments: dict, tools, always: set[str], has_diff: bool, choices: str) -> bool:
     while True:
         try:
             answer = console.input(f"    Allow? {escape(choices)}: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n    [dim]No answer (non-interactive?) — denied. Use --yes to approve all.[/dim]")
+            console.print("\n    [dim]No answer: denied. Use --yes to approve all.[/dim]")
             return False
-        if answer in ("y", "yes"):
-            return True
-        if answer in ("a", "always"):
-            always.add(name)
+        if answer in ("y", "yes", "a", "always"):
+            if answer.startswith("a"):
+                always.add(name)
             return True
         if answer in ("", "n", "no"):
             return False
         if has_diff and answer in ("d", "diff"):
-            diff = tools.preview_change(name, arguments) or "(no preview)"
+            diff = tools.preview(name, arguments) or "(no preview)"
             console.print(Syntax(diff, "diff", theme="ansi_dark", background_color="default"))
 
 
@@ -515,172 +325,128 @@ async def _cancellable(coro):
         loop.remove_signal_handler(signal.SIGINT)
 
 
-async def _chat(
-    config: dict,
-    message: str | None,
-    plain: bool,
-    session_id: str | None,
-    stream: bool = False,
-    show_thinking: bool = False,
-) -> int:
-    from .agent import ToolEvent
+async def _chat(config: dict, message: str | None, plain: bool, session_id: str | None,
+                stream: bool = False, show_thinking: bool = False, report_path: str | None = None) -> int:
+    from .loop import ToolEvent
 
     agent = _build_agent(config)
     await _detect_model(agent)
-
-    # Session handling — resume or create new
-    if session_id:
-        loaded = load_session(session_id)
-        conversation: list[dict] = loaded if loaded is not None else []
-        if loaded is not None:
-            console.print(f"[dim]Resumed session {session_id} ({len(conversation)} messages)[/dim]")
-    else:
-        session_id = generate_session_id()
-        conversation = []
-
-    # Track tool timing and turn timing
-    turn_start = 0.0
-    # Display for the current turn, so tool events and prompts can use it.
+    conversation: list[dict] = []
+    if session_id and (loaded := load_session(session_id)) is not None:
+        conversation = loaded
+        console.print(f"[dim]Resumed session {session_id} ({len(conversation)} messages)[/dim]")
+    session_id = session_id or generate_session_id()
     view: _TurnView | None = None
-    always_allowed: set[str] = set()
+    always: set[str] = set()
 
-    async def _approve(name: str, arguments: dict) -> bool:
-        if name in always_allowed:
+    async def approve(name: str, arguments: dict) -> bool:
+        if name in always:
             return True
         if view:
             view.pause()
         try:
-            return _ask_approval(name, arguments, agent.tools, always_allowed)
+            return _ask_approval(name, arguments, agent.tools, always)
         finally:
             if view:
                 view.resume()
 
-    agent.tools.approver = _approve
+    agent.tools.approver = approve
 
-    # Tool event callback for visualization
-    async def _on_tool_event(event: ToolEvent) -> None:
+    async def on_tool_event(event: ToolEvent) -> None:
         if event.arguments is not None:
-            # Tool call start
             if view:
                 view.status(f"[dim]Running {event.name}…[/dim]")
-            console.print(
-                f"  [cyan]⚡[/cyan] [bold]{event.name}[/bold] "
-                f"[dim]{_format_tool_args(event.arguments)}[/dim]"
-            )
-        elif event.result_preview is not None:
-            # Tool call result
-            timing = f" [dim]({event.duration:.1f}s)[/dim]" if event.duration >= 0.1 else ""
-            preview = _format_tool_result(event.result_preview)
-            if event.is_error:
-                console.print(f"    [red]✗[/red] [red]{preview}[/red]{timing}")
-            else:
-                console.print(f"    [green]✓[/green] [dim]{preview}[/dim]{timing}")
-            if view:
-                view.status("[dim]Thinking…[/dim]")
+            console.print(f"  [cyan]⚡[/cyan] [bold]{event.name}[/bold] [dim]{_format_args(event.arguments)}[/dim]")
+            return
+        timing = f" [dim]({event.duration:.1f}s)[/dim]" if event.duration >= 0.1 else ""
+        preview = _one_line(event.result or "", 96)
+        mark = "[red]✗[/red] [red]" if event.is_error else "[green]✓[/green] [dim]"
+        console.print(f"    {mark}{preview}[/]{timing}")
+        if view:
+            view.status("[dim]Thinking…[/dim]")
 
-    async def _run_turn(text: str) -> str:
-        """Run one agent turn, then print the reply unless it was already streamed."""
+    async def run_turn(text: str) -> float:
         nonlocal view
+        started = time.monotonic()
         view = _TurnView(plain)
         try:
             with view:
-                response = await agent.run(
-                    text,
-                    conversation,
-                    on_stream=view.on_delta if stream else None,
-                    on_tool_event=_on_tool_event,
-                    on_thinking=view.on_thinking if show_thinking else None,
-                )
-            if response.strip() != view.final_streamed.strip():
-                _render(response, plain)
-            return response
+                reply = await agent.run(text, conversation, on_stream=view.on_delta if stream else None,
+                                        on_tool_event=on_tool_event,
+                                        on_thinking=view.on_thinking if show_thinking else None)
+            if reply.strip() != view.final_streamed.strip():
+                _render(reply, plain)
         finally:
             view = None
+        save_session(session_id, conversation)
+        return time.monotonic() - started
 
     try:
-        # Display styled header
-        header = Text()
-        header.append("Agent Mini", style="bold green")
-        header.append(f" v{__version__}", style="dim")
-        header.append(" • ", style="dim")
-        header.append(f"{agent.provider.name}", style="bold cyan")
-        header.append(f" ({agent.provider.model_name})", style="cyan")
-        header.append(f" · {agent.profile.tier}", style="dim")
+        header = Text.assemble(("Agent Mini", "bold green"), (f" v{__version__} • ", "dim"),
+                               (agent.provider.name, "bold cyan"), (f" ({agent.provider.model})", "cyan"),
+                               (f" · {agent.profile.tier}", "dim"))
         console.print(Panel(header, border_style="dim green", padding=(0, 1)))
-
         if message:
-            turn_start = time.monotonic()
-            await _run_turn(message)
-            save_session(session_id, conversation)
-            err_console.print(f"[dim]  {_turn_footer(agent, time.monotonic() - turn_start)}[/dim]")
-            return _FINISH_EXIT_CODES.get(agent.finish_reason, EXIT_OK)
+            started = time.monotonic()
+            try:
+                elapsed = await run_turn(message)
+            finally:  # also when interrupted, so a timed-out eval run can be read
+                if report_path:
+                    _write_report(report_path, agent, session_id, time.monotonic() - started)
+            err_console.print(f"[dim]  {_turn_footer(agent, elapsed)}[/dim]")
+            return _EXIT_CODES.get(agent.finish_reason, EXIT_OK)
 
-        # Interactive REPL
-        console.print(
-            "[dim]Type 'exit' to quit · '/help' for commands · Ctrl+C stops a turn[/dim]\n"
-        )
-
+        console.print("[dim]Type 'exit' to quit · '/help' for commands · Ctrl+C stops a turn[/dim]\n")
         while True:
             try:
-                user_input = _read_input()
+                text = _read_input()
             except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]Goodbye![/dim]")
                 break
-
-            if not user_input:
+            if not text:
                 continue
-            if user_input.lower() in {"exit", "quit", "/exit", "/quit", ":q"}:
-                console.print("[dim]Goodbye![/dim]")
+            if text.lower() in {"exit", "quit", "/exit", "/quit", ":q"}:
                 break
-
-            # --- Slash commands ---
-            if user_input.startswith("/"):
-                await _handle_slash_command(user_input, conversation, agent, config)
+            if text.startswith("/"):
+                await _slash(text, conversation, agent, config)
                 continue
-
-            turn_start = time.monotonic()
             console.print()
             try:
-                await _cancellable(_run_turn(user_input))
+                elapsed = await _cancellable(run_turn(text))
             except asyncio.CancelledError:
                 task = asyncio.current_task()
                 if task is not None and task.cancelling():
                     raise
-                # Cancel the turn, not the session.
-                console.print("\n[yellow]Interrupted.[/yellow]\n")
+                console.print("\n[yellow]Interrupted.[/yellow]\n")  # cancel the turn, not the session
                 continue
-            turn_elapsed = time.monotonic() - turn_start
-
-            # Auto-save session after each turn
-            save_session(session_id, conversation)
-
-            console.print(f"[dim]  {_turn_footer(agent, turn_elapsed)}[/dim]")
-            console.print()
+            console.print(f"[dim]  {_turn_footer(agent, elapsed)}[/dim]\n")
+        console.print("[dim]Goodbye![/dim]")
     finally:
         await agent.close()
     return EXIT_OK
 
 
 def _turn_footer(agent, elapsed: float) -> str:
-    """One-line turn stats; evals/run.py parses this format."""
-    n = agent.turn_iterations
+    n, u = agent.turn_iterations, agent.turn_usage
     parts = [f"{n} iteration{'' if n == 1 else 's'}"]
-    u = agent.turn_usage
-    if u["total_tokens"] > 0:
-        parts.append(f"{u['prompt_tokens']:,} in")
-        parts.append(f"{u['completion_tokens']:,} out")
-    parts.append(f"{elapsed:.1f}s")
-    return "  •  ".join(parts)
+    if u["total_tokens"]:
+        parts += [f"{u['prompt_tokens']:,} in", f"{u['completion_tokens']:,} out"]
+    return "  •  ".join([*parts, f"{elapsed:.1f}s"])
+
+
+def _write_report(path: str, agent, session_id: str, elapsed: float) -> None:
+    """JSON summary of a one-shot run (read by evals/run.py)."""
+    report = {"model": agent.provider.model, "provider": agent.provider.name, "tier": agent.profile.tier,
+              "session": session_id, "elapsed_s": round(elapsed, 2), "iterations": agent.turn_iterations,
+              **agent.last_run}
+    Path(path).write_text(json.dumps(report, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
 
 
 def _read_input() -> str:
-    """Read user input with multi-line support using triple-quote delimiters."""
-    first_line = console.input("[bold blue]You:[/bold blue] ").strip()
-
-    # Check for multi-line delimiter
+    """One line, or several: wrap them in triple quotes, or end lines with a backslash."""
+    first = console.input("[bold blue]You:[/bold blue] ").strip()
     for delim in ('"""', "'''"):
-        if first_line.startswith(delim):
-            lines = [first_line[len(delim):]]
+        if first.startswith(delim):
+            lines = [first[len(delim):]]
             while True:
                 try:
                     line = console.input("[dim]...:[/dim] ")
@@ -691,280 +457,170 @@ def _read_input() -> str:
                     break
                 lines.append(line)
             return "\n".join(lines)
-
-    # Line continuation with backslash
-    result = first_line
-    while result.endswith("\\"):
-        result = result[:-1] + "\n"
+    text = first
+    while text.endswith("\\"):
         try:
-            result += console.input("[dim]...:[/dim] ")
+            text = text[:-1] + "\n" + console.input("[dim]...:[/dim] ")
         except (EOFError, KeyboardInterrupt):
             break
+    return text
 
-    return result
+
+_COMMANDS = (
+    ("/clear", "Reset the conversation"),
+    ("/undo", "Revert the last file change made by the agent"),
+    ("/model <name>", "Switch model, e.g. qwen3.5:9b or ollama/qwen3.5:9b"),
+    ("/tools", "List available tools"),
+    ("/memory [query]", "Show or search memories"),
+    ("/forget <key>", "Delete a memory"),
+    ("/status", "Show model, tier, sandbox and token usage"),
+    ("/sessions", "List saved sessions"),
+    ("/load <id>", "Resume a saved session"),
+    ("/help", "Show this help"),
+)
 
 
-def _panel(table: Table, title: str) -> None:
+def _table(rows, title: str, header: tuple[str, ...] | None = None) -> None:
+    table = Table(show_header=header is not None, box=None, padding=(0, 2, 0, 0))
+    for i, col in enumerate(header or ("", "")):
+        table.add_column(col, style="cyan bold" if i == 0 else None, no_wrap=i == 0)
+    for row in rows:
+        table.add_row(*map(str, row))
     console.print(Panel(table, title=f"[bold]{title}[/bold]", border_style="dim", padding=(1, 1)))
 
 
-async def _handle_slash_command(command: str, conversation: list[dict], agent, config: dict) -> None:
-    parts = command.split(maxsplit=1)
-    cmd = parts[0].lower()
-    arg = parts[1].strip() if len(parts) > 1 else ""
-
-    match cmd:
+async def _slash(command: str, conversation: list[dict], agent, config: dict) -> None:
+    cmd, _, arg = command.partition(" ")
+    arg = arg.strip()
+    match cmd.lower():
         case "/clear":
             conversation.clear()
             console.print("[dim]Conversation cleared.[/dim]")
-
         case "/undo":
             console.print(f"[green]{escape(agent.tools.undo())}[/green]")
             if agent.tools.undo_depth:
                 console.print(f"[dim]{agent.tools.undo_depth} more change(s) can be undone.[/dim]")
-            console.print("[dim]Changes made through shell_exec can't be undone.[/dim]")
-
+            console.print("[dim]Changes made through the shell can't be undone.[/dim]")
         case "/help":
-            table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
-            table.add_column("Command", style="cyan bold", no_wrap=True)
-            table.add_column("Description", style="dim")
-            for row in (
-                ("/clear", "Reset conversation"),
-                ("/undo", "Revert the last file change made by the agent"),
-                ("/model <name>", "Switch provider/model (e.g. ollama/qwen3:8b)"),
-                ("/tools", "List available tools"),
-                ("/memory [query]", "Browse/search stored memories"),
-                ("/status", "Show config, tier and token usage"),
-                ("/sessions", "List saved sessions"),
-                ("/load <id>", "Load a saved session"),
-                ("/help", "Show this help"),
-            ):
-                table.add_row(*row)
-            _panel(table, "Commands")
-            console.print(
-                "[dim]Multi-line: start with \"\"\" or ''' and end with the same delimiter.\n"
-                "Line continuation: end a line with \\ to continue on the next line.[/dim]"
-            )
-
+            _table(_COMMANDS, "Commands")
+            console.print("[dim]Multi-line: start with \"\"\" or ''' and end with the same. "
+                          "Or end a line with \\ to continue it.[/dim]")
         case "/tools":
-            table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
-            table.add_column("Tool", style="cyan bold", no_wrap=True)
-            table.add_column("Description", style="dim")
-            for td in agent.tools.get_tool_defs():
-                table.add_row(td["function"]["name"], td["function"].get("description", ""))
-            _panel(table, "Available Tools")
-
+            _table([(d["function"]["name"], d["function"]["description"]) for d in agent.tools.definitions()],
+                   "Tools")
         case "/memory" if arg:
-            console.print(agent.memory.recall(arg))
-
+            console.print(escape(agent.memory.recall(arg)))
         case "/memory":
-            recent = agent.memory.get_recent(10)
-            if not recent:
-                console.print("[dim]No memories stored yet.[/dim]")
-                return
-            table = Table(show_header=True, box=None, padding=(0, 1, 0, 0))
-            table.add_column("Time", style="dim", no_wrap=True)
-            table.add_column("Key", style="cyan bold")
-            table.add_column("Value")
-            for entry in recent:
-                table.add_row(entry.get("timestamp", "?")[:16], entry["key"], entry["value"])
-            _panel(table, "Recent Memories")
-
+            recent = agent.memory.recent(10)
+            if recent:
+                _table([(e["timestamp"][:16], e["key"], e["value"]) for e in recent], "Recent memories",
+                       ("Time", "Key", "Value"))
+            else:
+                console.print("[dim]No memories yet.[/dim]")
+        case "/forget" if arg:
+            console.print(escape(agent.memory.forget(arg)))
         case "/status":
             p, u = agent.profile, agent.session_usage
-            table = Table(show_header=False, box=None, padding=(0, 1, 0, 0))
-            table.add_column("Key", style="bold", no_wrap=True)
-            table.add_column("Value")
-            table.add_row("Provider", f"[cyan]{agent.provider.name}[/cyan] ({agent.provider.model_name})")
-            table.add_row("Tier", f"{p.tier} · {p.context:,} token budget · {agent.max_iterations} iterations")
-            table.add_row("Workspace", str(agent.tools.workspace))
-            table.add_row("Sandbox", agent.tools.sandbox_level)
-            table.add_row("Approval", ", ".join(sorted(agent.tools.confirm_tools)) or "off")
-            table.add_row("History", f"{len(conversation)} messages")
-            table.add_row("Tokens", f"{u['total_tokens']} total ({u['prompt_tokens']}→ {u['completion_tokens']}←)")
-            _panel(table, "Status")
-
+            _table([
+                ("Model", f"{agent.provider.name}/{agent.provider.model}"),
+                ("Tier", f"{p.tier} · {p.context:,}-token budget · {agent.max_iterations} iterations · "
+                         f"temperature {agent.temperature}"),
+                ("Workspace", agent.tools.workspace),
+                ("Sandbox", agent.tools.sandbox_level),
+                ("Approval", ", ".join(sorted(agent.tools.confirm)) or "off"),
+                ("History", f"{len(conversation)} messages"),
+                ("Tokens", f"{u['prompt_tokens']:,} in · {u['completion_tokens']:,} out"),
+            ], "Status")
         case "/model" if arg:
-            if "/" in arg:
-                new_prov, new_model = arg.split("/", 1)
-            else:
-                new_prov, new_model = config.get("provider", "ollama"), arg
-            config["provider"] = new_prov
-            config.setdefault("providers", {}).setdefault(new_prov, {})["model"] = new_model
-            # Persist only this change: the in-memory config also carries
-            # per-run overrides (--workspace, --model) that must not be saved.
-            persisted = load_config()
-            persisted["provider"] = new_prov
-            persisted.setdefault("providers", {}).setdefault(new_prov, {})["model"] = new_model
-            save_config(persisted)
+            prefix, sep, rest = arg.partition("/")
+            # "ollama/qwen3.5:9b" names a provider; "hf.co/org/model" is just a model name.
+            provider_name, model = (prefix, rest) if sep and prefix in PROVIDERS else (config["provider"], arg)
             from .providers import create_provider
             try:
-                new_provider = create_provider(config)
-            except Exception as e:
-                console.print(f"[red]Failed to switch: {escape(str(e))}[/red]")
+                switched = with_defaults({**config, "provider": provider_name})
+                switched["providers"][provider_name]["model"] = model
+                provider = create_provider(switched)
+            except ValueError as e:
+                console.print(f"[red]Can't switch: {escape(str(e))}[/red]")
                 return
-            # The agent recomputes tier, budgets and num_ctx.
-            await agent.set_provider(new_provider)
+            config.update(switched)
+            # Save only this change: the running config also holds per-run overrides.
+            raw = read_config() or {}
+            raw["provider"] = provider_name
+            raw.setdefault("providers", {}).setdefault(provider_name, {})["model"] = model
+            save_config(raw)
+            await agent.set_provider(provider)
             await _detect_model(agent)
-            console.print(
-                f"[green]Switched to {escape(new_prov)}/{escape(new_model)}[/green] "
-                f"[dim](tier {agent.profile.tier})[/dim]"
-            )
-
-        case "/model":
-            console.print("[yellow]Usage: /model <provider/model> or /model <model>[/yellow]")
-
+            console.print(f"[green]Switched to {escape(provider_name)}/{escape(model)}[/green] "
+                          f"[dim](tier {agent.profile.tier})[/dim]")
         case "/sessions":
-            sessions = list_sessions()
-            if not sessions:
+            rows = [(s["id"], s["messages"], s["updated"][:16], s["preview"]) for s in list_sessions()[:20]]
+            if rows:
+                _table(rows, "Sessions", ("ID", "Messages", "Updated", "Preview"))
+            else:
                 console.print("[dim]No saved sessions.[/dim]")
-                return
-            table = Table(show_header=True, box=None, padding=(0, 1, 0, 0))
-            table.add_column("ID", style="cyan bold")
-            table.add_column("Messages", justify="right")
-            table.add_column("Updated", style="dim")
-            table.add_column("Preview", style="dim")
-            for s in sessions[:20]:
-                table.add_row(s["id"], str(s["messages"]), s["updated"][:16], s["preview"])
-            _panel(table, "Sessions")
-
         case "/load" if arg:
             loaded = load_session(arg)
             if loaded is None:
-                console.print(f"[red]Session '{arg}' not found.[/red]")
+                console.print(f"[red]Session '{escape(arg)}' not found.[/red]")
                 return
             conversation[:] = loaded
-            console.print(f"[green]Loaded session {arg} ({len(loaded)} messages)[/green]")
-
-        case "/load":
-            console.print("[yellow]Usage: /load <session_id>[/yellow]")
-
+            console.print(f"[green]Loaded session {escape(arg)} ({len(loaded)} messages)[/green]")
+        case "/model" | "/load" | "/forget":
+            console.print(f"[yellow]Usage: {next(c for c, _ in _COMMANDS if c.startswith(cmd))}[/yellow]")
         case _:
-            console.print(f"[yellow]Unknown command: {cmd}. Type /help for commands.[/yellow]")
+            console.print(f"[yellow]Unknown command: {escape(cmd)}. Type /help for commands.[/yellow]")
 
 
 def _render(text: str, plain: bool) -> None:
-    if plain:
-        console.print(text)
-    else:
-        try:
-            console.print(Markdown(text))
-        except Exception:
-            console.print(text)
+    try:
+        reply_console.print(text if plain else Markdown(text), markup=False)
+    except Exception:
+        reply_console.print(text, markup=False)
 
 
-# ======================================================================
-# gateway  (Telegram)
-# ======================================================================
+# ── gateway ──────────────────────────────────────────────────────────
 
 
 @cli.command()
 @click.option("-v", "--verbose", is_flag=True, help="Show debug logs.")
 def gateway(verbose: bool):
-    """Start the messaging gateway (Telegram)."""
+    """Run the Telegram bot."""
     _setup_logging(verbose)
-    config = load_config()
-    if not config:
-        console.print("[red]No config found. Run 'agent-mini init' first.[/red]")
-        raise SystemExit(1)
-    asyncio.run(_gateway(config))
+    asyncio.run(_gateway(_load()))
 
 
 async def _gateway(config: dict) -> None:
-    from .bus import MessageBus
-    from .channels import TelegramChannel
+    from .telegram import TelegramGateway, gateway_config
 
-    channels = []
-    ch_cfg = config.get("channels", {})
-
-    # Telegram
-    tg = ch_cfg.get("telegram", {})
-    token = tg.get("token") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    if tg.get("enabled") and token:
-        allow_from = [str(u) for u in tg.get("allowFrom", [])]
-        if not allow_from or "*" in allow_from:
-            if tg.get("allowShell", False):
-                console.print(Panel(
-                    "[bold red]⚠ Telegram bot is PUBLIC and shell_exec is enabled.[/bold red]\n"
-                    "Anyone who finds the bot can run commands on this machine.\n"
-                    "Set channels.telegram.allowFrom to your numeric user ID.",
-                    border_style="red",
-                ))
-            else:
-                config = {
-                    **config,
-                    "tools": {**config.get("tools", {}), "sandboxLevel": "readonly"},
-                }
-                console.print(Panel(
-                    "[bold yellow]⚠ Telegram bot is PUBLIC:[/bold yellow] anyone who finds it can use it.\n"
-                    "Running in [bold]readonly[/bold] sandbox (no shell, no file writes).\n"
-                    "Set channels.telegram.allowFrom to your numeric user ID, or\n"
-                    "channels.telegram.allowShell: true to accept the risk.",
-                    border_style="yellow",
-                ))
-        elif any(not u.isdigit() for u in allow_from):
-            console.print(
-                "[yellow]⚠ channels.telegram.allowFrom contains usernames. Usernames can be "
-                "changed and then claimed by someone else; prefer numeric user IDs.[/yellow]"
-            )
-        # One memory store would leak one user's facts into everyone's prompt.
-        shared = len(allow_from) != 1 or "*" in allow_from
-        if shared and not tg.get("sharedMemory", False):
-            config = {**config, "memory": {**config.get("memory", {}), "enabled": False}}
-            console.print(
-                "[dim]Memory is off for the gateway because several users can reach it "
-                "(set channels.telegram.sharedMemory: true to share one store).[/dim]"
-            )
-        channels.append(
-            TelegramChannel(
-                token=token,
-                allow_from=allow_from,
-                stream_responses=tg.get("streamResponses", True),
-            )
-        )
-
-    if not channels:
-        console.print(
-            "[red]No channels enabled. Edit "
-            f"{CONFIG_FILE} and set 'enabled': true.[/red]"
-        )
+    tg = config["channels"]["telegram"]
+    token = tg["token"] or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not (tg["enabled"] and token):
+        console.print(f"[red]Telegram is not set up: set channels.telegram.enabled and token in {config_file()} "
+                      "(or TELEGRAM_BOT_TOKEN).[/red]")
         raise SystemExit(1)
-
+    config, warnings = gateway_config(config)
+    for warning in warnings:
+        console.print(Panel(escape(warning), border_style="yellow"))
     agent = _build_agent(config)
     agent.allow_local_images = False
     await _detect_model(agent)
-    confirm = sorted(agent.tools.confirm_tools)
-    if confirm:
-        console.print(
-            f"[dim]No one can approve tool calls in the gateway, so these are denied: "
-            f"{', '.join(confirm)} (tools.confirm).[/dim]"
-        )
-    bus = MessageBus(agent)
-
-    for ch in channels:
-        console.print(f"[green]Starting {ch.name}…[/green]")
-        await ch.start(bus.handle_message)
-
-    console.print(
-        f"\n[bold green]Gateway running[/bold green] "
-        f"— {len(channels)} channel(s) active"
-    )
-    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
-
+    if agent.tools.confirm:
+        console.print(f"[dim]Nobody can approve tool calls here, so these are denied: "
+                      f"{', '.join(sorted(agent.tools.confirm))} (tools.confirm).[/dim]")
+    bot = TelegramGateway(agent, token, tg["allowFrom"], tg["streamResponses"])
+    await bot.start()
+    console.print("[bold green]Telegram gateway running.[/bold green] [dim]Ctrl+C stops it.[/dim]")
     try:
         await asyncio.Event().wait()
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
-        console.print("\n[yellow]Shutting down…[/yellow]")
-        for ch in channels:
-            await ch.stop()
+        await bot.stop()
         await agent.close()
 
 
-# ======================================================================
-# doctor
-# ======================================================================
+# ── doctor ───────────────────────────────────────────────────────────
 
 _OK, _WARN, _FAIL = "[green]✓[/green]", "[yellow]![/yellow]", "[red]✗[/red]"
 
@@ -976,7 +632,8 @@ def doctor():
 
 
 async def _doctor() -> int:
-    from .agent import AgentLoop, Memory
+    from .loop import AgentLoop
+    from .memory import Memory
     from .providers import create_provider
 
     rows: list[tuple[str, str, str]] = []
@@ -988,54 +645,47 @@ async def _doctor() -> int:
         console.print(table)
         return 1 if any(mark == _FAIL for mark, _, _ in rows) else 0
 
+    path = config_file()
     try:
-        config = load_config()
+        raw = read_config()
     except json.JSONDecodeError as e:
-        rows.append((_FAIL, "Config", f"{CONFIG_FILE} is not valid JSON: {escape(str(e))}"))
+        rows.append((_FAIL, "Config", f"{path} is not valid JSON: {escape(str(e))}"))
         return report()
-    if not config:
-        rows.append((_FAIL, "Config", f"{CONFIG_FILE} not found — run: agent-mini init"))
+    if raw is None:
+        rows.append((_FAIL, "Config", f"{path} not found; run: agent-mini init"))
         return report()
-    mode = CONFIG_FILE.stat().st_mode & 0o777
-    if mode & 0o077:
-        rows.append((_WARN, "Config", f"{CONFIG_FILE} is readable by others; run: chmod 600 {CONFIG_FILE}"))
+    if path.stat().st_mode & 0o077:
+        rows.append((_WARN, "Config", f"{path} is readable by others; run: chmod 600 {path}"))
     else:
-        rows.append((_OK, "Config", str(CONFIG_FILE)))
-
+        rows.append((_OK, "Config", str(path)))
     try:
-        # A throwaway memory path: doctor must not touch the real store.
-        agent = AgentLoop(create_provider(config), config, Memory(CONFIG_DIR / ".doctor-memory.json"))
+        config = with_defaults(raw)
+        # A throwaway memory file: doctor must not touch the real store.
+        agent = AgentLoop(create_provider(config), config, Memory(agent_home() / ".doctor-memory.json"))
     except ValueError as e:
         rows.append((_FAIL, "Config values", escape(str(e))))
         return report()
 
     try:
         tools = agent.tools
-        writable = os.access(tools.workspace, os.W_OK)
-        if writable:
+        if os.access(tools.workspace, os.W_OK):
             rows.append((_OK, "Workspace", str(tools.workspace)))
         else:
             rows.append((_FAIL, "Workspace", f"{tools.workspace} is not writable"))
-        approval = ", ".join(sorted(tools.confirm_tools)) or "off"
-        rows.append((_OK, "Sandbox", f"{tools.sandbox_level} · approval: {approval}"))
+        rows.append((_OK, "Sandbox", f"{tools.sandbox_level} · approval: {', '.join(sorted(tools.confirm)) or 'off'}"))
         rows.extend(await _doctor_provider(agent))
         p = agent.profile
-        rows.append((
-            _OK, "Budgets",
-            f"tier {p.tier} · {p.context:,}-token budget · num_ctx {agent.provider.context_window:,} · "
-            f"{agent.max_iterations} iterations",
-        ))
-        if shutil.which("rg"):
-            rows.append((_OK, "ripgrep", "installed"))
-        else:
-            rows.append((_WARN, "ripgrep", "not installed; search_files falls back to grep"))
-        tg = config.get("channels", {}).get("telegram", {})
-        if tg.get("enabled"):
-            allow = [str(u) for u in tg.get("allowFrom", [])]
-            if not (tg.get("token") or os.environ.get("TELEGRAM_BOT_TOKEN")):
+        rows.append((_OK, "Budgets", f"tier {p.tier} · {p.context:,}-token budget · "
+                                     f"num_ctx {agent.provider.context_window:,} · {agent.max_iterations} iterations"))
+        rows.append((_OK, "ripgrep", "installed") if shutil.which("rg") else
+                    (_WARN, "ripgrep", "not installed; search_files falls back to grep"))
+        tg = config["channels"]["telegram"]
+        if tg["enabled"]:
+            allow = [str(u) for u in tg["allowFrom"]]
+            if not (tg["token"] or os.environ.get("TELEGRAM_BOT_TOKEN")):
                 rows.append((_FAIL, "Telegram", "enabled but no token (config or TELEGRAM_BOT_TOKEN)"))
             elif not allow or "*" in allow:
-                rows.append((_WARN, "Telegram", "bot is public: allowFrom is empty"))
+                rows.append((_WARN, "Telegram", "the bot is public: allowFrom is empty"))
             else:
                 rows.append((_OK, "Telegram", f"{len(allow)} allowed user(s)"))
     finally:
@@ -1044,16 +694,15 @@ async def _doctor() -> int:
 
 
 async def _doctor_provider(agent) -> list[tuple[str, str, str]]:
-    """Reachability, model presence and tool support for the configured provider."""
+    """Reachability, model presence and tool support."""
     provider = agent.provider
-    model = escape(provider.model_name)
-    base = getattr(provider, "_base_url", "")
+    model, base = escape(provider.model), provider.base_url
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             if provider.name == "ollama":
                 resp = await client.get(f"{base}/api/version")
             else:
-                resp = await client.get(f"{base}/models", headers=getattr(provider, "_headers", {}))
+                resp = await client.get(f"{base}/models", headers=provider.headers)
         data = resp.json() if resp.status_code < 400 else {}
     except (httpx.HTTPError, ValueError) as e:
         return [(_FAIL, "Provider", f"{provider.name} at {base} is unreachable ({type(e).__name__})")]
@@ -1062,29 +711,20 @@ async def _doctor_provider(agent) -> list[tuple[str, str, str]]:
         rows = [(_OK, "Provider", f"ollama {data.get('version', '?')} at {base}")]
         info = await agent.detect_model()
         if info is None:
-            rows.append((_FAIL, "Model", f"{model} not found — run: ollama pull {model}"))
-            return rows
-        facts = [model]
-        if info.params_b:
-            facts.append(f"{info.params_b:.3g}B params")
-        if info.context_length:
-            facts.append(f"{info.context_length:,}-token context")
+            return [*rows, (_FAIL, "Model", f"{model} not found; run: ollama pull {model}")]
+        facts = [model] + ([f"{info.params_b:.3g}B params"] if info.params_b else []) + \
+                ([f"{info.context_length:,}-token context"] if info.context_length else [])
         rows.append((_OK, "Model", " · ".join(facts)))
         if info.capabilities is not None:
-            if "tools" in info.capabilities:
-                rows.append((_OK, "Tool calling", "supported"))
-            else:
-                rows.append((_FAIL, "Tool calling", f"{model} has no tool support; pick another model"))
+            rows.append((_OK, "Tool calling", "supported") if "tools" in info.capabilities else
+                        (_FAIL, "Tool calling", f"{model} has no tool support; pick another model"))
         return rows
-
     if resp.status_code in (401, 403):
         return [(_FAIL, "Provider", f"{base} rejected the API key (HTTP {resp.status_code})")]
     if resp.status_code >= 400:
         return [(_WARN, "Provider", f"{base} answered HTTP {resp.status_code} for /models")]
     ids = [m.get("id") for m in data.get("data", []) if isinstance(m, dict)]
-    rows = [(_OK, "Provider", f"{provider.name} at {base}")]
-    if ids and provider.model_name not in ids:
-        rows.append((_WARN, "Model", f"{model} is not in the server's model list"))
-    else:
-        rows.append((_OK, "Model", model))
-    return rows
+    known = not ids or provider.model in ids
+    return [(_OK, "Provider", f"{provider.name} at {base}"),
+            (_OK, "Model", model) if known else (_WARN, "Model", f"{model} is not in the server's model list")]
+

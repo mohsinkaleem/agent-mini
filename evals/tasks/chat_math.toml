@@ -1,0 +1,10 @@
+id = "chat_math"
+category = "chat"
+timeout_seconds = 60
+max_tool_calls = 1
+solution_answer = "391"
+prompt = "What is 17 * 23? Reply with just the number."
+
+[[checks]]
+description = "answers 391"
+expect_regex = '\b391\b'

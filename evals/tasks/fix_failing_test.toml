@@ -3,6 +3,7 @@ category = "multi_step"
 setup = "fixtures/buggy_stack"
 timeout_seconds = 240
 fixture_unchanged = ["tests"]
+solution = '''{python} -c "import pathlib; p = pathlib.Path('src/stack.py'); p.write_text(p.read_text().replace('pop(0)', 'pop()'))"'''
 prompt = """
 There is a Python project in this workspace with failing tests. Run
 `python -m pytest -q` to see the failures, find the bug in the source

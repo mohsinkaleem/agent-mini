@@ -1,0 +1,10 @@
+id = "day_of_week"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 3
+solution_answer = "Friday"
+prompt = "What day of the week was 2024-03-15? Reply with just the day name."
+
+[[checks]]
+description = "answers Friday"
+expect_regex = '(?i)\bfriday\b'

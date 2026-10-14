@@ -1,3 +1,3 @@
-"""agent-mini: Ultra-lightweight personal AI agent."""
+"""agent-mini: a small, local-first AI agent."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

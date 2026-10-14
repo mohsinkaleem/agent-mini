@@ -1,0 +1,10 @@
+id = "chat_greeting"
+category = "chat"
+timeout_seconds = 60
+max_tool_calls = 0
+solution_answer = "Hi! I can run shell commands, read and edit files, and search the web."
+prompt = "Hi! What can you help me with? Two sentences at most."
+
+[[checks]]
+description = "says something"
+expect_regex = '\w{3,}'

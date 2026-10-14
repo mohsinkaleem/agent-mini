@@ -1,0 +1,11 @@
+id = "find_definition"
+category = "simple"
+setup = "fixtures/small_lib"
+timeout_seconds = 90
+max_tool_calls = 4
+solution_answer = "app/utils/dates.py"
+prompt = "Which file defines the function `parse_date`? Reply with just the file path, relative to the workspace."
+
+[[checks]]
+description = "names app/utils/dates.py"
+expect_regex = 'app/utils/dates\.py'

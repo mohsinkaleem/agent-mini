@@ -1,0 +1,18 @@
+id = "exact_content"
+category = "robustness"
+timeout_seconds = 90
+max_tool_calls = 3
+solution = '''{python} -c "open('quote.txt', 'w', encoding='utf-8').write('She said \x22it\x27s done\x22 \x5co/ — 100% sure, and \x24HOME stays literal.\n')"'''
+prompt = '''
+Create quote.txt containing exactly this one line (a trailing newline is fine):
+She said "it's done" \o/ — 100% sure, and $HOME stays literal.
+'''
+
+[[checks]]
+description = "content is byte-exact"
+shell = '''{python} -c "
+import sys
+want = 'She said \x22it\x27s done\x22 \x5co/ — 100% sure, and \x24HOME stays literal.'
+got = open('quote.txt', encoding='utf-8').read().rstrip('\n')
+sys.exit(0 if got == want else f'got: {got!r}')
+"'''

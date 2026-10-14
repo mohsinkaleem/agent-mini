@@ -1,0 +1,16 @@
+id = "count_rows"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 3
+setup_shell = '''{python} -c "
+import random
+random.seed(7)
+rows = ['id,name,score'] + [f'{i},user{i},{random.randint(1, 99)}' for i in range(1, 38)]
+open('data.csv', 'w').write('\n'.join(rows) + '\n')
+"'''
+solution_answer = "37"
+prompt = "How many data rows (not counting the header line) are in data.csv? Reply with just the number."
+
+[[checks]]
+description = "answers 37"
+expect_regex = '\b37\b'

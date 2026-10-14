@@ -1,29 +1,40 @@
 #!/usr/bin/env python3
 """Agent Mini task-eval harness.
 
-Framework-free: stdlib + `agent-mini` only. No YAML lib, no pytest, no
-LangChain. Copies a fixture to a temp workspace, runs the agent headless
-against the prompt, then runs shell checks to verify the outcome.
+Stdlib only. For each task: copy a fixture into a temp workspace, run
+``agent-mini chat -m`` headless in a throwaway home, then check the files it
+left and the answer it gave. Metrics come from the run report the CLI writes
+(``chat --report``), not from scraping the terminal output.
 
 Usage
 -----
-    python evals/run.py                            # all tasks, config model
-    python evals/run.py --task refactor_rename    # one task
-    python evals/run.py --model llama3.2:3b       # override model
-    python evals/run.py --provider ollama --model qwen3:8b
-    python evals/run.py --out results/small.json  # save JSON report
-    python evals/run.py --compare results/*.json  # cross-tier table
+    python evals/run.py                              # every task, configured model
+    python evals/run.py --model qwen3.5:4b --repeat 3
+    python evals/run.py --category simple            # one category
+    python evals/run.py --task codebase_qa,log_tail  # some tasks
+    python evals/run.py --set agent.temperature=0.2  # A/B a config change
+    python evals/run.py --validate                   # check the checks (no LLM)
+    python evals/run.py --compare results/a.json results/b.json
 
-Design
-------
-- **Fixtures** are copied per-run to ``tempfile.mkdtemp()`` — never mutated in
-  place, and always cleaned up on exit.
-- **Task files** are TOML, parsed with stdlib ``tomllib``.
-- **Checks** are shell one-liners executed with ``cwd=workspace``. Non-zero
-  exit ⇒ failed check. ``{python}`` is replaced by the harness interpreter.
-  Matchers: ``expect_exact`` (stripped stdout equals), ``expect_regex``,
-  ``expect_stdout`` (substring), ``expect_no_stdout``. A task can also list
-  ``fixture_unchanged`` paths that the agent must not modify.
+Task files (``tasks/*.toml``)
+-----------------------------
+    id, prompt, category, timeout_seconds
+    setup            fixture directory copied into the workspace
+    setup_shell      shell run in the workspace before the agent starts
+    followups        more prompts, sent as later turns of the same session
+    new_session      true: each followup starts a fresh session
+    config           table merged into the agent config (e.g. memory)
+    max_tool_calls   fail when the agent used more tool calls than this
+    forbidden_tools  fail when the agent called any of these
+    fixture_unchanged  paths the agent must not modify
+    solution         shell that solves the task (for --validate)
+    solution_answer  a correct final answer (for --validate)
+
+    [[checks]]       ``shell`` runs in the workspace and must exit 0; without
+                     ``shell`` the matchers apply to the agent's final reply.
+                     Matchers: expect_exact (after strip), expect_regex,
+                     expect_stdout (substring), expect_no_stdout.
+                     ``{python}`` is replaced by this interpreter.
 """
 
 from __future__ import annotations
@@ -35,6 +46,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -45,32 +57,16 @@ from pathlib import Path
 
 EVALS_DIR = Path(__file__).parent
 TASKS_DIR = EVALS_DIR / "tasks"
-FIXTURES_DIR = EVALS_DIR / "fixtures"
 RESULTS_DIR = EVALS_DIR / "results"
 
 # Exit codes from `agent-mini chat -m` (see cli.py).
-_AGENT_EXIT_REASONS = {
-    2: "max_iterations",
-    3: "provider_error",
-    4: "stuck",
-    124: "timeout",
-    130: "cancelled",
-}
-
-# Agent settings copied from the user's config into the eval home; everything
-# else (system prompt, memory, plugins, sessions) stays out of the run.
-_COPIED_AGENT_KEYS = ("temperature", "tier", "contextWindow")
-
-# ─────────────────────────────────────────────────────────────────────
-# Data classes
-# ─────────────────────────────────────────────────────────────────────
+_EXIT_REASONS = {2: "max_iterations", 3: "provider_error", 4: "stuck", 124: "timeout", 130: "cancelled"}
 
 
 @dataclass
 class Check:
-    """A single shell / stdout check applied after the agent finishes."""
-    shell: str
     description: str = ""
+    shell: str | None = None
     expect_exact: str | None = None
     expect_regex: str | None = None
     expect_stdout: str | None = None
@@ -82,398 +78,405 @@ class Task:
     id: str
     prompt: str
     category: str = "general"
-    setup: str | None = None
     timeout_seconds: int = 180
-    checks: list[Check] = field(default_factory=list)
+    setup: str | None = None
+    setup_shell: str | None = None
+    followups: list[str] = field(default_factory=list)
+    new_session: bool = False
+    config: dict = field(default_factory=dict)
+    max_tool_calls: int | None = None
+    forbidden_tools: list[str] = field(default_factory=list)
     fixture_unchanged: list[str] = field(default_factory=list)
+    solution: str | None = None
+    solution_answer: str | None = None
+    checks: list[Check] = field(default_factory=list)
 
 
 @dataclass
-class Result:
-    task_id: str
-    category: str
+class Run:
     passed: bool
-    duration_seconds: float
-    checks_passed: int
-    checks_total: int
-    agent_stdout: str
-    workspace: str
-    failure_reason: str = ""
-    metrics: dict = field(default_factory=dict)
+    failure: str
+    seconds: float
+    metrics: dict
+    workspace: str | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Task loading (TOML via stdlib tomllib)
+# Tasks
 # ─────────────────────────────────────────────────────────────────────
 
+_TASK_FIELDS = set(Task.__dataclass_fields__)
 _CHECK_FIELDS = set(Check.__dataclass_fields__)
 
 
-def _parse_task(path: Path) -> Task:
+def parse_task(path: Path) -> Task:
     data = tomllib.loads(path.read_text())
     if "id" not in data or "prompt" not in data:
-        raise ValueError(f"{path}: task requires `id` and `prompt`")
-
+        raise ValueError(f"{path.name}: a task needs `id` and `prompt`")
+    unknown = set(data) - _TASK_FIELDS
+    if unknown:
+        raise ValueError(f"{path.name}: unknown field(s) {sorted(unknown)}")
     checks = []
-    for c in data.get("checks", []):
-        unknown = set(c) - _CHECK_FIELDS
-        if unknown:
-            raise ValueError(f"{path}: unknown check field(s) {sorted(unknown)}")
+    for c in data.pop("checks", []):
+        bad = set(c) - _CHECK_FIELDS
+        if bad:
+            raise ValueError(f"{path.name}: unknown check field(s) {sorted(bad)}")
         checks.append(Check(**c))
-
-    return Task(
-        id=str(data["id"]),
-        prompt=str(data["prompt"]).strip(),
-        category=str(data.get("category", "general")),
-        setup=data.get("setup") or None,
-        timeout_seconds=int(data.get("timeout_seconds", 180)),
-        checks=checks,
-        fixture_unchanged=list(data.get("fixture_unchanged", [])),
-    )
+    data["prompt"] = data["prompt"].strip()
+    return Task(**data, checks=checks)
 
 
-def load_tasks(only: str | None = None) -> list[Task]:
-    if not TASKS_DIR.exists():
-        return []
+def load_tasks(ids: list[str] | None = None, category: str | None = None) -> list[Task]:
     tasks = []
     for p in sorted(TASKS_DIR.glob("*.toml")):
         try:
-            t = _parse_task(p)
-        except Exception as e:
-            print(f"[warn] failed to parse {p.name}: {e}", file=sys.stderr)
+            t = parse_task(p)
+        except Exception as e:  # a broken task file must not hide the others
+            print(f"[warn] {e}", file=sys.stderr)
             continue
-        if only and t.id != only:
+        if (ids and t.id not in ids) or (category and t.category != category):
             continue
         tasks.append(t)
     return tasks
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Task runner
+# Workspace, home and agent runs
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _prepare_workspace(task: Task) -> Path:
+def _shell(command: str, cwd: Path, timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        command.replace("{python}", shlex.quote(sys.executable)),
+        shell=True, cwd=str(cwd), capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def prepare_workspace(task: Task) -> Path:
     ws = Path(tempfile.mkdtemp(prefix=f"agent-mini-eval-{task.id}-"))
     if task.setup:
-        src = (EVALS_DIR / task.setup).resolve()
-        if not src.exists():
-            raise FileNotFoundError(f"fixture not found: {src}")
-        # Copy fixture contents into workspace (not a nested dir).
-        for entry in src.iterdir():
-            if entry.is_dir():
-                shutil.copytree(entry, ws / entry.name)
-            else:
-                shutil.copy2(entry, ws / entry.name)
+        shutil.copytree(EVALS_DIR / task.setup, ws, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache"))
+    if task.setup_shell:
+        proc = _shell(task.setup_shell, ws)
+        if proc.returncode:
+            raise RuntimeError(f"{task.id}: setup_shell failed: {proc.stderr[:300]}")
     return ws
 
 
-def _prepare_home(workspace: Path) -> Path:
-    """Temp ``AGENT_MINI_HOME`` holding only the user's provider settings.
+def _merge(base: dict, extra: dict) -> dict:
+    out = dict(base)
+    for key, value in extra.items():
+        out[key] = _merge(out.get(key, {}), value) if isinstance(value, dict) else value
+    return out
 
-    Keeps the user's memory, plugins, sessions and system prompt out of the
-    run, and keeps the run out of them.
-    """
-    home = Path(tempfile.mkdtemp(prefix="agent-mini-eval-home-"))
-    user_home = Path(os.environ.get("AGENT_MINI_HOME") or Path.home() / ".agent-mini").expanduser()
+
+def _dotted(pairs: list[str]) -> dict:
+    """``["agent.temperature=0.2"]`` → ``{"agent": {"temperature": 0.2}}`` (values parsed as JSON when possible)."""
+    out: dict = {}
+    for pair in pairs:
+        key, _, raw = pair.partition("=")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            value = raw
+        node = out
+        *parents, leaf = key.split(".")
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[leaf] = value
+    return out
+
+
+def user_provider_settings() -> dict:
+    """Provider settings from the user's config; nothing else of theirs enters a run."""
+    home = Path(os.environ.get("AGENT_MINI_HOME") or Path.home() / ".agent-mini").expanduser()
     try:
-        user_cfg = json.loads((user_home / "config.json").read_text())
+        cfg = json.loads((home / "config.json").read_text())
     except (OSError, json.JSONDecodeError):
-        user_cfg = {}
-    agent_cfg = user_cfg.get("agent", {})
+        cfg = {}
+    return {"provider": cfg.get("provider", "ollama"), "providers": cfg.get("providers", {})}
+
+
+def prepare_home(workspace: Path, task: Task, overrides: dict) -> Path:
+    """Temp ``AGENT_MINI_HOME``: the user's provider, code defaults for the rest."""
+    home = Path(tempfile.mkdtemp(prefix="agent-mini-eval-home-"))
     config = {
-        "provider": user_cfg.get("provider", "ollama"),
-        "providers": user_cfg.get("providers", {}),
-        "agent": {k: agent_cfg[k] for k in _COPIED_AGENT_KEYS if k in agent_cfg},
+        **user_provider_settings(),
         "tools": {"sandboxLevel": "workspace"},
         "memory": {"enabled": False},
         "workspace": str(workspace),
     }
+    config = _merge(_merge(config, task.config), overrides)
     path = home / "config.json"
     path.write_text(json.dumps(config, indent=2))
     path.chmod(0o600)  # may hold API keys
     return home
 
 
-def _run_agent(
-    prompt: str,
-    workspace: Path,
-    provider: str | None,
-    model: str | None,
-    timeout: int,
-) -> tuple[str, int]:
-    """Invoke ``agent-mini chat -m <prompt> --workspace <ws> --yes``.
-
-    Returns (combined stdout+stderr, exit code). ``AGENT_MINI_WORKSPACE`` is
-    set so any child process inherits the pinned workspace too, and
-    ``AGENT_MINI_HOME`` points at a throwaway home (see ``_prepare_home``).
-    """
-    home = _prepare_home(workspace)
-    env = os.environ.copy()
-    env["AGENT_MINI_WORKSPACE"] = str(workspace)
-    env["AGENT_MINI_HOME"] = str(home)
-    # Force color/markdown off for machine-parseable stdout.
-    env["NO_COLOR"] = "1"
-    env["TERM"] = "dumb"
-
-    cmd = [
-        sys.executable, "-m", "agent_mini", "chat",
-        "-m", prompt,
-        "--workspace", str(workspace),
-        "--no-markdown",
-        "--yes",
-    ]
-    if provider:
-        cmd += ["--provider", provider]
-    if model:
-        cmd += ["--model", model]
-
+def run_agent(prompt: str, ws: Path, home: Path, args: list[str], timeout: float) -> tuple[dict | None, int, str]:
+    """One ``chat -m`` turn. Returns (report or None, exit code, output tail)."""
+    report_path = home / f"report-{time.monotonic_ns()}.json"
+    cmd = [sys.executable, "-m", "agent_mini", "chat", "-m", prompt, "--no-markdown", "--yes",
+           "--report", str(report_path), *args]
+    env = {**os.environ, "AGENT_MINI_HOME": str(home), "AGENT_MINI_WORKSPACE": str(ws),
+           "NO_COLOR": "1", "TERM": "dumb"}
+    proc = subprocess.Popen(cmd, cwd=str(home), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, start_new_session=True)
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            check=False,
-        )
-        out = (proc.stdout or "") + (proc.stderr or "")
-        return out, proc.returncode
-    except subprocess.TimeoutExpired as e:
-        out = (e.stdout or "") + (e.stderr or "")
-        if isinstance(out, bytes):
-            out = out.decode(errors="replace")
-        return f"[TIMEOUT after {timeout}s]\n{out}", 124
-    finally:
-        shutil.rmtree(home, ignore_errors=True)
-
-
-def _run_check(check: Check, workspace: Path) -> tuple[bool, str]:
-    """Execute a shell check inside *workspace*. Returns (passed, detail)."""
-    command = check.shell.replace("{python}", shlex.quote(sys.executable))
-    try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        out, _ = proc.communicate(timeout=max(1.0, timeout))
+        code = proc.returncode
     except subprocess.TimeoutExpired:
-        return False, "check timed out after 60s"
-
-    stdout = proc.stdout or ""
-    if proc.returncode != 0:
-        return False, f"exit {proc.returncode}: {(proc.stderr or stdout)[:200]}"
-    if check.expect_exact is not None and stdout.strip() != check.expect_exact:
-        return False, f"expected exactly {check.expect_exact!r}, got {stdout.strip()[:100]!r}"
-    if check.expect_regex is not None and not re.search(check.expect_regex, stdout):
-        return False, f"stdout does not match /{check.expect_regex}/"
-    if check.expect_stdout is not None and check.expect_stdout not in stdout:
-        return False, f"stdout missing '{check.expect_stdout}'"
-    if check.expect_no_stdout is not None and check.expect_no_stdout in stdout:
-        return False, f"stdout unexpectedly contains '{check.expect_no_stdout}'"
-    return True, ""
+        # Ctrl+C first: the agent then writes what it did so far into its report.
+        os.killpg(proc.pid, signal.SIGINT)
+        try:
+            out, _ = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            out, _ = proc.communicate()
+        code = 124
+    report = json.loads(report_path.read_text()) if report_path.exists() else None
+    return report, code, (out or "")[-3000:]
 
 
-_HASH_SKIP_DIRS = {"__pycache__", ".pytest_cache"}
+# ─────────────────────────────────────────────────────────────────────
+# Checks
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _match(check: Check, text: str) -> str:
+    """Return why *text* fails the check's matchers, or ''."""
+    if check.expect_exact is not None and text.strip() != check.expect_exact:
+        return f"expected exactly {check.expect_exact!r}, got {text.strip()[:80]!r}"
+    if check.expect_regex is not None and not re.search(check.expect_regex, text):
+        return f"no match for /{check.expect_regex}/ in {text.strip()[:80]!r}"
+    if check.expect_stdout is not None and check.expect_stdout not in text:
+        return f"missing {check.expect_stdout!r}"
+    if check.expect_no_stdout is not None and check.expect_no_stdout in text:
+        return f"unexpectedly contains {check.expect_no_stdout!r}"
+    return ""
+
+
+def run_check(check: Check, ws: Path, reply: str) -> str:
+    """'' when the check passes, otherwise the reason."""
+    if check.shell is None:
+        return _match(check, reply)
+    try:
+        proc = _shell(check.shell, ws)
+    except subprocess.TimeoutExpired:
+        return "check timed out"
+    if proc.returncode:
+        return f"exit {proc.returncode}: {(proc.stderr or proc.stdout).strip()[:150]}"
+    return _match(check, proc.stdout)
 
 
 def _hash_tree(path: Path) -> str:
     """Content hash of a file or directory, ignoring caches that test runs create."""
-    h = hashlib.sha256()
     if not path.exists():
         return "missing"
+    h = hashlib.sha256()
     files = [path] if path.is_file() else sorted(
         p for p in path.rglob("*")
-        if p.is_file() and not _HASH_SKIP_DIRS.intersection(p.relative_to(path).parts)
+        if p.is_file() and not {"__pycache__", ".pytest_cache"} & set(p.relative_to(path).parts)
     )
     for f in files:
-        h.update(str(f.relative_to(path) if f != path else f.name).encode())
+        h.update(f.name.encode() if f == path else str(f.relative_to(path)).encode())
         h.update(f.read_bytes())
     return h.hexdigest()
 
 
-def _check_fixture_unchanged(task: Task, workspace: Path) -> str:
-    """Return the first protected path the agent modified, or ''."""
+def tampered(task: Task, ws: Path) -> str:
+    """The first protected path the agent modified, or ''."""
     if not task.setup:
         return ""
-    src = (EVALS_DIR / task.setup).resolve()
-    for rel in task.fixture_unchanged:
-        if _hash_tree(src / rel) != _hash_tree(workspace / rel):
-            return rel
+    src = EVALS_DIR / task.setup
+    return next((rel for rel in task.fixture_unchanged if _hash_tree(src / rel) != _hash_tree(ws / rel)), "")
+
+
+def judge(task: Task, ws: Path, reply: str, tool_calls: list[dict]) -> str:
+    """'' when the run passes, otherwise the first reason it failed."""
+    if rel := tampered(task, ws):
+        return f"fixture_tampered: {rel}"
+    used = sorted({c["name"] for c in tool_calls} & set(task.forbidden_tools))
+    if used:
+        return f"forbidden tool: {', '.join(used)}"
+    if task.max_tool_calls is not None and len(tool_calls) > task.max_tool_calls:
+        return f"too many tool calls: {len(tool_calls)} > {task.max_tool_calls}"
+    for check in task.checks:
+        if reason := run_check(check, ws, reply):
+            return f"{check.description or check.shell}: {reason}"
     return ""
 
 
-def run_task(
-    task: Task,
-    provider: str | None = None,
-    model: str | None = None,
-    keep_workspace: bool = False,
-) -> Result:
-    ws = _prepare_workspace(task)
-    t0 = time.monotonic()
-    agent_out, agent_exit = _run_agent(task.prompt, ws, provider, model, task.timeout_seconds)
-    duration = time.monotonic() - t0
-
-    checks_passed = 0
-    failure_reason = ""
-    if agent_exit != 0:
-        failure_reason = _AGENT_EXIT_REASONS.get(agent_exit, f"agent exited {agent_exit}")
-
-    tampered = _check_fixture_unchanged(task, ws)
-    if tampered and not failure_reason:
-        failure_reason = f"fixture_tampered: {tampered}"
-
-    for c in task.checks:
-        ok, detail = _run_check(c, ws)
-        if ok:
-            checks_passed += 1
-        elif not failure_reason:
-            failure_reason = f"{c.description or c.shell}: {detail}"
-
-    passed = agent_exit == 0 and not tampered and checks_passed == len(task.checks)
-
-    result = Result(
-        task_id=task.id,
-        category=task.category,
-        passed=passed,
-        duration_seconds=round(duration, 2),
-        checks_passed=checks_passed,
-        checks_total=len(task.checks),
-        agent_stdout=agent_out[-4000:],  # trim to keep JSON small
-        workspace=str(ws),
-        failure_reason=failure_reason,
-        metrics=_agent_metrics(agent_out),
-    )
-
-    if not keep_workspace and not failure_reason:
-        # Only nuke the workspace if the task passed; keep on failure so
-        # humans can inspect. Failed workspaces stay on disk under /tmp
-        # and get GC'd by the OS.
-        shutil.rmtree(ws, ignore_errors=True)
-    return result
-
-
 # ─────────────────────────────────────────────────────────────────────
-# Reporting
+# Running a task
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _format_table(results: list[Result]) -> str:
-    if not results:
-        return "(no results)"
-    id_w = max(len(r.task_id) for r in results)
-    cat_w = max(len(r.category) for r in results)
-    rows = []
-    header = (
-        f"{'TASK'.ljust(id_w)}  {'CAT'.ljust(cat_w)}  "
-        f"{'RESULT':<7}  {'CHECKS':<9}  {'TIME':>7}  {'ITER':>4}  {'TOKENS':>7}  DETAIL"
-    )
-    rows.append(header)
-    rows.append("-" * len(header))
-    for r in results:
-        status = "PASS" if r.passed else "FAIL"
-        checks = f"{r.checks_passed}/{r.checks_total}"
-        detail = "" if r.passed else (r.failure_reason[:60] or "")
-        rows.append(
-            f"{r.task_id.ljust(id_w)}  {r.category.ljust(cat_w)}  "
-            f"{status:<7}  {checks:<9}  {r.duration_seconds:>6.1f}s  "
-            f"{r.metrics.get('iterations', 0):>4}  {r.metrics.get('tokens', 0):>7,}  {detail}"
-        )
-    pass_n = sum(1 for r in results if r.passed)
-    rows.append("-" * len(header))
-    rows.append(f"SUMMARY: {pass_n}/{len(results)} tasks passed")
-    return "\n".join(rows)
-
-
-def _agent_metrics(agent_stdout: str) -> dict:
-    """Extract lightweight metrics from the agent's log and turn footer."""
-    def _count(pattern: str) -> int:
-        return len(re.findall(pattern, agent_stdout))
-
-    def _last_int(pattern: str) -> int:
-        found = re.findall(pattern, agent_stdout)
-        return int(found[-1].replace(",", "")) if found else 0
-
-    # Footer from `chat -m`: "N iterations  •  X in  •  Y out  •  T s"
+def _metrics(reports: list[dict]) -> dict:
+    calls = [c for r in reports for c in r.get("tool_calls", [])]
+    usage = [r.get("usage", {}) for r in reports]
     return {
-        "iterations": _last_int(r"(\d+) iterations?\s+•"),
-        "json_repairs": _count(r"Repaired malformed tool arguments"),
-        "text_tool_calls": _count(r"Recovered \d+ tool call"),
-        "loop_nudges": _count(r"Loop detected"),
-        "tokens": _last_int(r"([\d,]+) in\s+•") + _last_int(r"([\d,]+) out\s+•"),
+        "iterations": sum(r.get("iterations", 0) for r in reports),
+        "tool_calls": len(calls),
+        "tool_errors": sum(1 for c in calls if c.get("error")),
+        "tools": [c["name"] for c in calls],
+        "text_tool_calls": sum(r.get("text_tool_calls", 0) for r in reports),
+        "loop_nudges": sum(r.get("loop_nudges", 0) for r in reports),
+        "prompt_tokens": sum(u.get("prompt_tokens", 0) for u in usage),
+        "completion_tokens": sum(u.get("completion_tokens", 0) for u in usage),
+        "finish": [r.get("finish_reason", "?") for r in reports],
     }
 
 
-def _save_report(model: str, results: list[Result], out_path: Path | None) -> Path:
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    if out_path is None:
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        safe_model = re.sub(r"[^A-Za-z0-9._-]", "_", model)
-        out_path = RESULTS_DIR / f"{safe_model}_{stamp}.json"
+def run_task(task: Task, agent_args: list[str], overrides: dict, keep: bool, log_dir: Path | None) -> Run:
+    ws = prepare_workspace(task)
+    home = prepare_home(ws, task, overrides)
+    started = time.monotonic()
+    reports: list[dict] = []
+    failure, session = "", None
+    for prompt in [task.prompt, *task.followups]:
+        left = task.timeout_seconds - (time.monotonic() - started)
+        args = [*agent_args, *(["-s", session] if session and not task.new_session else [])]
+        report, code, output = run_agent(prompt, ws, home, args, left)
+        if report:
+            reports.append(report)
+            session = report.get("session")
+        if code:
+            failure = _EXIT_REASONS.get(code, f"agent exited {code}: {output[-200:]}")
+            break
+        if report is None:
+            failure = f"no report: {output[-200:]}"
+            break
+    seconds = time.monotonic() - started
+    calls = [c for r in reports for c in r.get("tool_calls", [])]
+    reply = reports[-1].get("reply", "") if reports else ""
+    failure = failure or judge(task, ws, reply, calls)
+    if failure and log_dir:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"{task.id}-{time.strftime('%H%M%S')}.json").write_text(
+            json.dumps({"task": task.id, "failure": failure, "reports": reports}, indent=1, default=str)
+        )
+    shutil.rmtree(home, ignore_errors=True)
+    if not (keep or failure):
+        shutil.rmtree(ws, ignore_errors=True)
+    return Run(passed=not failure, failure=failure, seconds=round(seconds, 1), metrics=_metrics(reports),
+               workspace=str(ws) if failure or keep else None)
 
-    payload = {
-        "model": model,
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "summary": {
-            "total": len(results),
-            "passed": sum(1 for r in results if r.passed),
-        },
-        "results": [
-            {
-                "task_id": r.task_id,
-                "category": r.category,
-                "passed": r.passed,
-                "duration_seconds": r.duration_seconds,
-                "checks_passed": r.checks_passed,
-                "checks_total": r.checks_total,
-                "failure_reason": r.failure_reason,
-                "metrics": r.metrics,
-                "workspace": r.workspace if not r.passed else None,
-            }
-            for r in results
-        ],
+
+# ─────────────────────────────────────────────────────────────────────
+# --validate: the checks must fail on the untouched fixture and pass on the solution
+# ─────────────────────────────────────────────────────────────────────
+
+
+def validate(tasks: list[Task]) -> list[str]:
+    problems = []
+    for task in tasks:
+        ws = prepare_workspace(task)
+        try:
+            if not judge(task, ws, "", []):
+                problems.append(f"{task.id}: checks pass before the agent has done anything")
+            if task.solution is None and task.solution_answer is None:
+                problems.append(f"{task.id}: no solution or solution_answer to validate against")
+                continue
+            if task.solution:
+                proc = _shell(task.solution, ws)
+                if proc.returncode:
+                    problems.append(f"{task.id}: solution failed: {proc.stderr.strip()[:200]}")
+                    continue
+            if reason := judge(task, ws, task.solution_answer or "", []):
+                problems.append(f"{task.id}: checks fail on the solution: {reason}")
+        finally:
+            shutil.rmtree(ws, ignore_errors=True)
+    return problems
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Reports
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _mean(values: list[float]) -> float:
+    return round(sum(values) / len(values), 1) if values else 0.0
+
+
+def summarize(results: dict[str, list[Run]], tasks: dict[str, Task]) -> dict:
+    runs = [r for rs in results.values() for r in rs]
+    by_cat: dict[str, list[int]] = {}
+    for tid, rs in results.items():
+        cat = by_cat.setdefault(tasks[tid].category, [0, 0])
+        cat[0] += sum(r.passed for r in rs)
+        cat[1] += len(rs)
+    return {
+        "tasks": len(results),
+        "runs": len(runs),
+        "passed": sum(r.passed for r in runs),
+        "pass_rate": round(sum(r.passed for r in runs) / len(runs), 3) if runs else 0.0,
+        "all_runs_passed": sum(all(r.passed for r in rs) for rs in results.values()),
+        "mean_seconds": _mean([r.seconds for r in runs]),
+        "mean_tool_calls": _mean([r.metrics["tool_calls"] for r in runs]),
+        "mean_prompt_tokens": _mean([r.metrics["prompt_tokens"] for r in runs]),
+        "by_category": {c: f"{p}/{n}" for c, (p, n) in sorted(by_cat.items())},
     }
-    out_path.write_text(json.dumps(payload, indent=2))
-    return out_path
 
 
-def _compare_reports(paths: list[Path]) -> str:
+def print_table(results: dict[str, list[Run]], tasks: dict[str, Task]) -> None:
+    id_w = max(map(len, results)) if results else 4
+    print(f"{'TASK'.ljust(id_w)}  {'CATEGORY':<12} PASS   TIME  CALLS  TOKENS  FAILURE")
+    for tid, rs in results.items():
+        passed = sum(r.passed for r in rs)
+        fail = next((r.failure for r in rs if not r.passed), "")
+        print(
+            f"{tid.ljust(id_w)}  {tasks[tid].category:<12} {passed}/{len(rs):<3} "
+            f"{_mean([r.seconds for r in rs]):>5.1f}s {_mean([r.metrics['tool_calls'] for r in rs]):>5} "
+            f"{_mean([r.metrics['prompt_tokens'] for r in rs]):>7.0f}  {fail[:70]}"
+        )
+
+
+def compare(paths: list[Path]) -> str:
     reports = [json.loads(p.read_text()) for p in paths]
-    if not reports:
-        return "(no reports)"
-    # Union of task ids across reports.
-    ids: list[str] = []
-    for rep in reports:
-        for r in rep["results"]:
-            if r["task_id"] not in ids:
-                ids.append(r["task_id"])
-
-    model_w = max(len(rep["model"]) for rep in reports)
-    id_w = max(len(t) for t in ids)
-    rows = []
-    header = f"{'TASK'.ljust(id_w)}  " + "  ".join(rep["model"].ljust(model_w) for rep in reports)
-    rows.append(header)
-    rows.append("-" * len(header))
+    labels = [rep.get("label") or rep["model"] for rep in reports]
+    w = max(12, *map(len, labels))
+    ids = list(dict.fromkeys(r["task_id"] for rep in reports for r in rep["results"]))
+    id_w = max(map(len, ids))
+    lines = [f"{'TASK'.ljust(id_w)}  " + "  ".join(lbl.ljust(w) for lbl in labels)]
     for tid in ids:
         cells = []
         for rep in reports:
-            match = next((r for r in rep["results"] if r["task_id"] == tid), None)
-            if match is None:
-                cells.append("--".ljust(model_w))
-            else:
-                mark = "PASS" if match["passed"] else "FAIL"
-                cells.append(f"{mark} {match['duration_seconds']:>5.1f}s".ljust(model_w))
-        rows.append(f"{tid.ljust(id_w)}  " + "  ".join(cells))
-    rows.append("-" * len(header))
-    summary = "  ".join(
-        f"{rep['summary']['passed']}/{rep['summary']['total']}".ljust(model_w)
-        for rep in reports
-    )
-    rows.append(f"{'SUMMARY'.ljust(id_w)}  {summary}")
-    return "\n".join(rows)
+            r = next((r for r in rep["results"] if r["task_id"] == tid), None)
+            if r is None:
+                cells.append("--".ljust(w))
+                continue
+            runs = r["runs"]
+            passed = sum(x["passed"] for x in runs)
+            calls = _mean([x["metrics"]["tool_calls"] for x in runs])
+            cells.append(f"{passed}/{len(runs)} {calls:>4}c".ljust(w))
+        lines.append(f"{tid.ljust(id_w)}  " + "  ".join(cells))
+    for key in ("pass_rate", "mean_tool_calls", "mean_seconds", "mean_prompt_tokens"):
+        lines.append(f"{key.ljust(id_w)}  " + "  ".join(str(rep["summary"][key]).ljust(w) for rep in reports))
+    cats = list(dict.fromkeys(c for rep in reports for c in rep["summary"]["by_category"]))
+    for cat in cats:
+        lines.append(f"  {cat.ljust(id_w - 2)}  " + "  ".join(
+            rep["summary"]["by_category"].get(cat, "--").ljust(w) for rep in reports))
+    return "\n".join(lines)
+
+
+def save(path: Path, label: str, args: argparse.Namespace, results: dict[str, list[Run]], tasks: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "label": label,
+        "model": args.model or "(config)",
+        "provider": args.provider or "(config)",
+        "settings": args.set,
+        "repeat": args.repeat,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "summary": summarize(results, tasks),
+        "results": [
+            {"task_id": tid, "category": tasks[tid].category, "runs": [r.__dict__ for r in rs]}
+            for tid, rs in results.items()
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=1))
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -483,46 +486,64 @@ def _compare_reports(paths: list[Path]) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Agent Mini task-eval runner.")
-    ap.add_argument("--task", help="Run only this task id.")
-    ap.add_argument("--provider", help="Provider override passed to `agent-mini chat --provider`.")
-    ap.add_argument("--model", help="Model override passed to `agent-mini chat --model`.")
-    ap.add_argument("--out", help="Path to write JSON report.")
-    ap.add_argument("--keep-workspace", action="store_true",
-                    help="Keep the temp workspace even when a task passes (for debugging).")
-    ap.add_argument("--compare", nargs="+",
-                    help="Print a cross-report comparison table and exit.")
+    ap.add_argument("--task", help="Comma-separated task ids.")
+    ap.add_argument("--category", help="Only tasks in this category.")
+    ap.add_argument("--provider", help="Provider for `agent-mini chat --provider`.")
+    ap.add_argument("--model", help="Model for `agent-mini chat --model`.")
+    ap.add_argument("--repeat", type=int, default=1, help="Runs per task (default 1).")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="Config override, e.g. agent.temperature=0.2 (repeatable).")
+    ap.add_argument("--label", help="Name for this run in reports and --compare.")
+    ap.add_argument("--out", help="Where to write the JSON report.")
+    ap.add_argument("--keep-workspace", action="store_true", help="Keep workspaces of passing runs too.")
+    ap.add_argument("--validate", action="store_true", help="Check the checks against each task's solution.")
+    ap.add_argument("--compare", nargs="+", help="Compare saved reports and exit.")
     args = ap.parse_args()
 
     if args.compare:
-        print(_compare_reports([Path(p) for p in args.compare]))
+        print(compare([Path(p) for p in args.compare]))
         return 0
 
-    tasks = load_tasks(only=args.task)
+    tasks = load_tasks(args.task.split(",") if args.task else None, args.category)
     if not tasks:
-        print(f"No tasks found in {TASKS_DIR}", file=sys.stderr)
+        print("No matching tasks.", file=sys.stderr)
         return 1
 
-    model = args.model or "(config)"
-    if args.provider:
-        model = f"{args.provider}/{model}"
-    print(f"Running {len(tasks)} task(s) against model={model}\n")
+    if args.validate:
+        problems = validate(tasks)
+        for p in problems:
+            print(f"✗ {p}")
+        print(f"{len(tasks) - len({p.split(':')[0] for p in problems})}/{len(tasks)} tasks valid")
+        return 1 if problems else 0
 
-    results: list[Result] = []
-    for t in tasks:
-        print(f"→ {t.id} ({t.category}) ", end="", flush=True)
-        r = run_task(
-            t, provider=args.provider, model=args.model, keep_workspace=args.keep_workspace
-        )
-        results.append(r)
-        print(f"[{ 'PASS' if r.passed else 'FAIL' }] {r.duration_seconds:.1f}s")
+    agent_args = [*(["--provider", args.provider] if args.provider else []),
+                  *(["--model", args.model] if args.model else [])]
+    overrides = _dotted(args.set)
+    label = args.label or "_".join(filter(None, [args.model or "config", *args.set]))
+    safe = re.sub(r"[^A-Za-z0-9._=-]+", "_", label)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    out = Path(args.out) if args.out else RESULTS_DIR / f"{safe}_{stamp}.json"
+    log_dir = RESULTS_DIR / "failures" / f"{safe}_{stamp}"
+
+    print(f"{len(tasks)} task(s) × {args.repeat} against {label}\n")
+    by_id = {t.id: t for t in tasks}
+    results: dict[str, list[Run]] = {}
+    for task in tasks:
+        for i in range(args.repeat):
+            run = run_task(task, agent_args, overrides, args.keep_workspace, log_dir)
+            results.setdefault(task.id, []).append(run)
+            mark = "PASS" if run.passed else f"FAIL  {run.failure[:90]}"
+            print(f"  {task.id} [{i + 1}/{args.repeat}] {run.seconds:5.1f}s {run.metrics['tool_calls']:>2}c  {mark}",
+                  flush=True)
+        save(out, label, args, results, by_id)  # partial results survive an interrupted run
 
     print()
-    print(_format_table(results))
-
-    out_path = _save_report(model, results, Path(args.out) if args.out else None)
-    print(f"\nreport → {out_path}")
-
-    return 0 if all(r.passed for r in results) else 1
+    print_table(results, by_id)
+    s = summarize(results, by_id)
+    print(f"\npass rate {s['pass_rate']:.0%} ({s['passed']}/{s['runs']} runs) · "
+          f"{s['all_runs_passed']}/{s['tasks']} tasks passed every run · {s['by_category']}")
+    print(f"report → {out}")
+    return 0 if s["passed"] == s["runs"] else 1
 
 
 if __name__ == "__main__":

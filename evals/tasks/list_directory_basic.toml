@@ -1,6 +1,7 @@
 id = "list_directory_basic"
-category = "file_ops"
+category = "simple"
 timeout_seconds = 90
+solution = "printf 0 > filecount.txt"
 prompt = """
 List the files in this workspace. Then create a file `filecount.txt`
 containing ONLY the number of files (not directories) present in the

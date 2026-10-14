@@ -1,7 +1,8 @@
 id = "multi_file_edit"
-category = "refactor"
+category = "simple"
 setup = "fixtures/small_repo"
 timeout_seconds = 240
+solution = '''{python} -c "import pathlib; p = pathlib.Path('src/config.py'); p.write_text(p.read_text().replace('0.4.2', '0.5.0'))" && printf 0.5.0 > VERSION.txt'''
 prompt = """
 Bump the VERSION in `src/config.py` from `0.4.2` to `0.5.0`. Then add
 a NEW file `VERSION.txt` in the workspace root containing ONLY the new

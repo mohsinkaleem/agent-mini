@@ -1,7 +1,8 @@
 id = "refactor_rename"
-category = "refactor"
+category = "multi_step"
 setup = "fixtures/py_project"
 timeout_seconds = 240
+solution = '''{python} -c "import pathlib, re; [p.write_text(re.sub(r'\\bcalc\\b', 'compute', p.read_text())) for p in pathlib.Path('.').rglob('*.py')]"'''
 prompt = """
 Rename the function `calc` to `compute` in this workspace. Update ALL
 Python files, including call sites and imports. When you are done, run

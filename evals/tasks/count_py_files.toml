@@ -1,0 +1,11 @@
+id = "count_py_files"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 4
+setup_shell = "mkdir -p src/pkg/sub && touch src/a.py src/b.py src/notes.txt src/pkg/c.py src/pkg/README.md src/pkg/sub/d.py setup.py"
+solution_answer = "4"
+prompt = "How many .py files are under src/, including subfolders? Reply with just the number."
+
+[[checks]]
+description = "answers 4"
+expect_regex = '\b4\b'

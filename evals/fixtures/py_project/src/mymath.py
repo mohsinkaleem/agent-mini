@@ -1,11 +1,11 @@
-"""A tiny arithmetic helper — used by the eval fixture."""
+"""A tiny arithmetic helper."""
 
 
 def calc(a: int, b: int) -> int:
-    """Add two ints. The eval will ask the agent to rename this."""
+    """Add two ints."""
     return a + b
 
 
 def double_calc(x: int) -> int:
-    """Uses `calc` — the rename must update the call site too."""
+    """Twice x, via calc."""
     return calc(x, x)

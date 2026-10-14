@@ -1,0 +1,15 @@
+id = "json_version"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 2
+setup_shell = '''printf '{\n  "name": "lumen-ui",\n  "version": "2.7.1",\n  "dependencies": {\n    "react": "18.3.1",\n    "zod": "3.23.8"\n  }\n}\n' > package.json'''
+solution_answer = "2.7.1"
+prompt = "What version is the package in package.json? Reply with just the version number."
+
+[[checks]]
+description = "answers 2.7.1"
+expect_regex = '\b2\.7\.1\b'
+
+[[checks]]
+description = "not a dependency version"
+expect_no_stdout = "18.3.1"

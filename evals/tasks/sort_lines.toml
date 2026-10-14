@@ -1,0 +1,17 @@
+id = "sort_lines"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 3
+setup_shell = "printf 'pear\\napple\\nfig\\nbanana\\n' > names.txt"
+solution = "sort names.txt > sorted.txt"
+prompt = "Sort the lines of names.txt alphabetically and save the result to sorted.txt. Leave names.txt as it is."
+
+[[checks]]
+description = "sorted.txt is sorted"
+shell = "cat sorted.txt"
+expect_exact = "apple\nbanana\nfig\npear"
+
+[[checks]]
+description = "names.txt untouched"
+shell = "cat names.txt"
+expect_exact = "pear\napple\nfig\nbanana"

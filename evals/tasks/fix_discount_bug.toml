@@ -1,0 +1,11 @@
+id = "fix_discount_bug"
+category = "multi_step"
+setup = "fixtures/shop"
+timeout_seconds = 240
+fixture_unchanged = ["tests"]
+solution = '''{python} -c "import pathlib; p = pathlib.Path('src/pricing.py'); p.write_text(p.read_text().replace('price * percent / 100', 'price * (100 - percent) / 100'))"'''
+prompt = "Tests are failing in this project. Run `python -m pytest -q`, find the bug in src/, fix it and re-run the tests. Do not modify the tests."
+
+[[checks]]
+description = "tests pass"
+shell = "{python} -m pytest -q"

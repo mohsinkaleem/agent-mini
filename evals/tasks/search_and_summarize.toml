@@ -1,7 +1,8 @@
 id = "search_and_summarize"
-category = "qa"
+category = "simple"
 setup = "fixtures/small_repo"
 timeout_seconds = 180
+solution = "printf wonderland-widget > service.txt"
 prompt = """
 Find the SERVICE_NAME constant in this repository and write ONLY its
 string value (without quotes) to a file named `service.txt` in the

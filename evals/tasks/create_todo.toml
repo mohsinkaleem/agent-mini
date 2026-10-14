@@ -1,0 +1,14 @@
+id = "create_todo"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 3
+solution = '''printf -- '- [ ] milk\n- [ ] eggs\n- [ ] bread\n' > todo.md'''
+prompt = "Create todo.md with a markdown checklist of three unchecked items, in this order: milk, eggs, bread."
+
+[[checks]]
+description = "three unchecked items in order"
+shell = '''{python} -c "
+import re, sys
+items = re.findall(r'^\s*[-*] \[ \] (.+?)\s*$', open('todo.md').read(), re.M)
+sys.exit(0 if [i.lower() for i in items] == ['milk', 'eggs', 'bread'] else f'items: {items}')
+"'''

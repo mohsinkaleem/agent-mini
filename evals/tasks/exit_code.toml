@@ -1,0 +1,15 @@
+id = "exit_code"
+category = "robustness"
+timeout_seconds = 90
+max_tool_calls = 3
+setup_shell = "printf '#!/bin/sh\\nexit 3\\n' > check.sh && chmod +x check.sh"
+solution_answer = "No, it failed with exit code 3."
+prompt = "Run ./check.sh and tell me whether it succeeded and what its exit code was."
+
+[[checks]]
+description = "reports exit code 3"
+expect_regex = '\b3\b'
+
+[[checks]]
+description = "says it failed"
+expect_regex = '(?i)(fail|did not succeed|didn.t succeed|not succe|unsuccessful|non-?zero|\bno\b)'

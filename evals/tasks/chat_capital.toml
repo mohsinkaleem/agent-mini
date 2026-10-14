@@ -1,0 +1,10 @@
+id = "chat_capital"
+category = "chat"
+timeout_seconds = 60
+max_tool_calls = 0
+solution_answer = "Tokyo"
+prompt = "What is the capital of Japan? Reply with just the city name."
+
+[[checks]]
+description = "answers Tokyo"
+expect_regex = '(?i)\btokyo\b'

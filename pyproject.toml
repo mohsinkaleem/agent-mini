@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mini"
-version = "0.4.0"
-description = "Ultra-lightweight personal AI agent — shell, files, web, memory — powered by local or cloud LLMs"
+version = "0.5.0"
+description = "A small, local-first AI agent tuned for small local models: shell, files, web and memory over Ollama or any OpenAI-compatible API"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -33,9 +33,7 @@ dependencies = [
 
 [project.optional-dependencies]
 telegram = ["python-telegram-bot>=21.0"]
-all = [
-    "python-telegram-bot>=21.0",
-]
+all = ["python-telegram-bot>=21.0"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

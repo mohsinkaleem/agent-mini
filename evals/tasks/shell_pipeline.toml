@@ -1,6 +1,7 @@
 id = "shell_pipeline"
-category = "shell"
+category = "multi_step"
 timeout_seconds = 120
+solution = "printf 10 > a.txt; printf 20 > b.txt; printf 12 > c.txt; printf 20 > max.txt"
 prompt = """
 Create three text files in this workspace: `a.txt` with content "10",
 `b.txt` with content "20", and `c.txt` with content "12". Then use

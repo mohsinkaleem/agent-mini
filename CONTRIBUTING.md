@@ -21,10 +21,11 @@ uv run ruff check src/ tests/
 
 ## Project Principles
 
-- **Stay lean.** The core is under 5,000 lines. Don't add frameworks, heavy abstractions, or dependencies unless absolutely necessary.
+- **Stay lean.** The core is about 3,000 lines. Don't add frameworks, heavy abstractions, or dependencies unless absolutely necessary.
 - **Zero-framework.** Pure `httpx` + `asyncio`. No LangChain, no LiteLLM, no abstractions-on-abstractions.
-- **One file, one job.** Each module has a clear, single responsibility.
-- **Tests are required.** Every new feature or bug fix needs a test in `tests/`.
+- **Flat and obvious.** One module per job, no subpackages beyond `providers/`.
+- **Measure small-model changes.** A change to the prompt, the tools or the loop needs an eval comparison (`python evals/run.py --repeat 3`, before and after, `--compare` the two reports) on at least one small model.
+- **Tests are required.** Every new feature or bug fix needs a test in `tests/`. A behaviour bug seen in an eval transcript should also get an eval task.
 
 ## How to Contribute
 
@@ -48,7 +49,7 @@ Open an issue with:
 ### What We Welcome
 
 - Bug fixes
-- New LLM provider integrations (following `providers/base.py` interface)
+- New LLM provider integrations (a `Provider` subclass in `providers/`)
 - New built-in tools (keep them small and self-contained)
 - Plugin examples
 - Documentation improvements
@@ -67,30 +68,30 @@ Open an issue with:
 - Ruff for linting (`ruff check`).
 - No docstrings required for obvious methods — code should be self-explanatory.
 - Prefer `match/case` for dispatch over `if/elif` chains.
+- Line length 120 (`ruff check src tests evals`).
 
 ## Project Structure
 
 ```
 src/agent_mini/
-├── cli.py              # CLI entry point (Click)
-├── config.py           # Config loading
-├── bus.py              # Multi-channel message routing
-├── sessions.py         # Session persistence
-├── agent/
-│   ├── loop.py         # Core ReAct agent loop
-│   ├── context.py      # System prompt builder
-│   ├── memory.py       # Persistent JSON memory + TF-IDF search
-│   ├── tools.py        # Built-in tools + plugin loader
-│   ├── token_estimator.py  # Token counting + model tier classification
-│   └── vision.py       # Image detection + encoding
-├── providers/
-│   ├── base.py         # Provider interface + tool call parsing
-│   ├── ollama.py       # Ollama provider
-│   └── local.py        # OpenAI and any OpenAI-compatible endpoint
-└── channels/
-    ├── base.py         # Channel interface
-    └── telegram.py     # Telegram bot channel
+├── cli.py          # init, chat, doctor, gateway
+├── config.py       # defaults (the one source of truth), validation, files
+├── loop.py         # the ReAct loop
+├── prompt.py       # model tiers, token budgets, system prompt
+├── tools.py        # tool registry: one @tool method per tool, plus plugins
+├── web.py          # web_search, web_fetch, SSRF guard
+├── memory.py       # persistent memory
+├── vision.py       # images in messages
+├── sessions.py     # saved conversations
+├── telegram.py     # Telegram gateway
+└── providers/
+    ├── base.py     # Provider interface, tool-call parsing and JSON repair
+    ├── ollama.py   # Ollama native API
+    └── openai.py   # OpenAI and any OpenAI-compatible server
+evals/              # task-eval harness: run.py, tasks/*.toml, fixtures/
 ```
+
+A new tool is a method on `Tools` decorated with `@tool(description, **param_docs)`; its signature becomes the JSON schema. A new setting goes into `DEFAULTS` in `config.py`, and `config.example.json` is regenerated from it (a test checks they match).
 
 ## Releasing
 

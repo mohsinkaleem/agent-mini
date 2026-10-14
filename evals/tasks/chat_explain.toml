@@ -1,0 +1,10 @@
+id = "chat_explain"
+category = "chat"
+timeout_seconds = 60
+max_tool_calls = 0
+solution_answer = "It prints the number of lines in file.txt."
+prompt = "In one sentence: what does the shell command `wc -l file.txt` print?"
+
+[[checks]]
+description = "mentions lines"
+expect_regex = '(?i)\blines?\b'

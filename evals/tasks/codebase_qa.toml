@@ -1,7 +1,8 @@
 id = "codebase_qa"
-category = "qa"
+category = "simple"
 setup = "fixtures/small_repo"
 timeout_seconds = 180
+solution = "printf 9137 > answer.txt"
 prompt = """
 Look at this repository, find what network port the server listens on,
 and write ONLY the port number as an integer to a file named `answer.txt`

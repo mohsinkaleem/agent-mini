@@ -1,4 +1,4 @@
-"""Tests for mymath — must still pass after the rename."""
+"""Tests for mymath."""
 
 import sys
 from pathlib import Path

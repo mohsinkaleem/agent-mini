@@ -1,6 +1,7 @@
 id = "error_recovery"
-category = "error_recovery"
+category = "simple"
 timeout_seconds = 180
+solution = "printf recovered > does_not_exist.txt"
 prompt = """
 Read the file `does_not_exist.txt` in this workspace. When it fails,
 do NOT give up — instead, create the file with the content

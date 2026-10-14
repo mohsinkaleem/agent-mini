@@ -1,6 +1,7 @@
 id = "write_file_from_scratch"
-category = "file_ops"
+category = "simple"
 timeout_seconds = 120
+solution = '''printf 'def greet(name):\n    return "Hello, " + name\n' > hello.py'''
 prompt = """
 Create a file named `hello.py` in this workspace containing a single
 function `greet(name)` that returns the string `"Hello, "` followed by

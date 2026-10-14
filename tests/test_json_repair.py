@@ -1,4 +1,4 @@
-"""Tests for JSON repair in parse_arguments (small-model tool call resilience)."""
+"""Tool-argument JSON repair."""
 
 
 from agent_mini.providers.base import INVALID_ARGS_KEY, parse_arguments

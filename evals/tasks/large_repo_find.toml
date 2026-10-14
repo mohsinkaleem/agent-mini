@@ -1,0 +1,25 @@
+id = "large_repo_find"
+category = "multi_step"
+timeout_seconds = 180
+max_tool_calls = 5
+setup_shell = '''{python} -c "
+import os, random
+random.seed(3)
+os.makedirs('pkg'); os.makedirs('docs')
+verbs = ['load', 'save', 'check', 'build', 'merge', 'split', 'render', 'fetch']
+nouns = ['user', 'order', 'invoice', 'report', 'cache', 'token', 'queue', 'shard']
+for i in range(60):
+    names = random.sample([v + '_' + n for v in verbs for n in nouns], 3)
+    if i == 47:
+        names[1] = 'resolve_tenant'
+    body = ''.join(f'def {n}(x):\n    return x\n\n\n' for n in names)
+    open(f'pkg/mod_{i:02d}.py', 'w').write(body)
+open('docs/notes.md', 'w').write('Tenants are looked up with resolve_tenant() somewhere in pkg/.\n')
+"'''
+solution = "printf pkg/mod_47.py > where.txt"
+prompt = "Find the file that defines the function resolve_tenant and write its path (relative to the workspace root) to where.txt."
+
+[[checks]]
+description = "where.txt names pkg/mod_47.py"
+shell = "cat where.txt"
+expect_regex = '^\s*(\./)?pkg/mod_47\.py\s*$'

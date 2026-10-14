@@ -1,0 +1,19 @@
+id = "append_line"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 4
+setup_shell = "printf '#!/bin/sh\\nexport EDITOR=vim\\n' > env.sh"
+solution = '''printf '%s\n' 'export PATH="$HOME/bin:$PATH"' >> env.sh'''
+prompt = '''
+Append this exact line to the end of env.sh, keeping the existing lines:
+export PATH="$HOME/bin:$PATH"
+'''
+
+[[checks]]
+description = "existing lines kept and the new line added literally"
+shell = '''{python} -c "
+import sys
+want = ['#!/bin/sh', 'export EDITOR=vim', 'export PATH=\x22\x24HOME/bin:\x24PATH\x22']
+got = [ln for ln in open('env.sh').read().splitlines() if ln.strip()]
+sys.exit(0 if got == want else f'got: {got}')
+"'''

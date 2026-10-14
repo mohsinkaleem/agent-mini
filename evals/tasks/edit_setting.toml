@@ -1,0 +1,16 @@
+id = "edit_setting"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 4
+setup_shell = '''printf '[server]\nhost = 127.0.0.1\nport = 8000\ndebug = true\n\n[logging]\nlevel = info\nverbose = true\n' > settings.ini'''
+solution = '''printf '[server]\nhost = 127.0.0.1\nport = 8000\ndebug = false\n\n[logging]\nlevel = info\nverbose = true\n' > settings.ini'''
+prompt = "In settings.ini, change debug from true to false. Do not change anything else."
+
+[[checks]]
+description = "debug is false and every other line is unchanged"
+shell = '''{python} -c "
+import sys
+want = '[server]\nhost = 127.0.0.1\nport = 8000\ndebug = false\n\n[logging]\nlevel = info\nverbose = true'
+got = open('settings.ini').read().rstrip('\n')
+sys.exit(0 if got == want else f'got: {got!r}')
+"'''

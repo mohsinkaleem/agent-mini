@@ -1,0 +1,12 @@
+id = "memory_roundtrip"
+category = "multi_step"
+timeout_seconds = 120
+config = { memory = { enabled = true } }
+followups = ["Which text editor do I like best? Reply with just its name."]
+new_session = true
+solution_answer = "helix"
+prompt = "Please remember this for later: my favourite text editor is helix."
+
+[[checks]]
+description = "a fresh session recalls helix"
+expect_regex = '(?i)\bhelix\b'

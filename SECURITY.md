@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+| 0.5.x   | :white_check_mark: |
+| < 0.5   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -22,10 +23,10 @@ Agent Mini executes shell commands and file operations on behalf of the user. Th
 
 - **Always use `workspace` or `readonly` mode** in shared or untrusted environments. An unknown `sandboxLevel` value is rejected at startup.
 - **Never expose the agent to untrusted input** with `sandboxLevel: unrestricted`.
-- Use **approval mode** (`tools.confirm`) so shell commands and file edits need your OK. `agent-mini init` enables it; in the Telegram gateway those tools are denied.
+- Use **approval mode** (`tools.confirm`) so shell commands and file edits need your OK. Unknown tool names in it are a config error. `agent-mini init` enables it; in the Telegram gateway those tools are denied.
 - A Telegram bot with an empty `allowFrom` is public and runs `readonly` unless `allowShell: true` is set. Use numeric user IDs. With more than one allowed user, memory is off unless `sharedMemory: true`.
 - Dangerous commands (`rm -rf /`, `sudo`, `mkfs`, etc.) are blocked by default. The blocklist is friction, not a boundary.
-- `shell_exec` does not inherit environment variables that look like secrets (`*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*CREDENTIAL*`) unless listed in `tools.shellEnvAllow`.
-- Web content is wrapped in `<untrusted_content>` and the model is told not to follow instructions in it. This reduces prompt-injection risk; it does not remove it.
+- `shell` does not inherit environment variables that look like secrets (`*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*CREDENTIAL*`) unless listed in `tools.shellEnvAllow`.
+- Web content is wrapped in `<untrusted_content>`, and the model is told to treat file contents, command output and web pages as data and never follow instructions in them. This reduces prompt-injection risk; it does not remove it.
 - `AGENTS.md` / `.agent-mini.md` in the workspace are added to the system prompt. Treat them like code when you open an untrusted repository.
 - `config.json`, `memory.json` and sessions are written with `0600` permissions. API keys can come from `AGENT_MINI_API_KEY` / `OPENAI_API_KEY` and the bot token from `TELEGRAM_BOT_TOKEN` instead of the file. `agent-mini doctor` warns when the config is readable by others.

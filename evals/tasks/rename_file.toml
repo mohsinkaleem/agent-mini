@@ -1,0 +1,16 @@
+id = "rename_file"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 3
+setup_shell = "printf 'draft v1\\n' > draft.txt"
+solution = "mv draft.txt final.txt"
+prompt = "Rename draft.txt to final.txt."
+
+[[checks]]
+description = "draft.txt is gone"
+shell = "test ! -e draft.txt"
+
+[[checks]]
+description = "final.txt has the original content"
+shell = "cat final.txt"
+expect_exact = "draft v1"

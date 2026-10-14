@@ -1,0 +1,15 @@
+id = "read_answer"
+category = "simple"
+timeout_seconds = 90
+max_tool_calls = 2
+setup_shell = '''printf 'Meeting notes, 2026-02-11\nAttendees: Priya, Marco, Lin\nDecision: ship v2 on March 3\nOwner of the rollout: Marco\n' > notes.txt'''
+solution_answer = "Marco"
+prompt = "Who owns the rollout according to notes.txt? Reply with just the name."
+
+[[checks]]
+description = "answers Marco"
+expect_regex = '\bMarco\b'
+
+[[checks]]
+description = "does not name another attendee"
+expect_no_stdout = "Priya"

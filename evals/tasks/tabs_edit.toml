@@ -1,0 +1,16 @@
+id = "tabs_edit"
+category = "robustness"
+timeout_seconds = 90
+max_tool_calls = 4
+setup_shell = "printf 'test:\\n\\tpytest -q\\n\\nlint:\\n\\truff check .\\n' > Makefile"
+solution = "printf 'test:\\n\\tpytest -q -x\\n\\nlint:\\n\\truff check .\\n' > Makefile"
+prompt = "In the Makefile, change the test command from `pytest -q` to `pytest -q -x`. Keep the tab indentation (Makefiles need tabs)."
+
+[[checks]]
+description = "only the test command changed, tabs kept"
+shell = '''{python} -c "
+import sys
+want = 'test:\n\tpytest -q -x\n\nlint:\n\truff check .'
+got = open('Makefile').read().rstrip('\n')
+sys.exit(0 if got == want else f'got: {got!r}')
+"'''
