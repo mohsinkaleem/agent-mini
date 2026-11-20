@@ -8,8 +8,9 @@ import pytest
 
 from agent_mini.config import with_defaults
 from agent_mini.providers import OllamaProvider, OpenAIProvider, create_provider
-from agent_mini.providers.base import ModelInfo, parse_text_tool_calls
+from agent_mini.providers.base import ModelInfo
 from agent_mini.providers.ollama import to_ollama
+from agent_mini.providers.parsing import parse_text_tool_calls
 
 
 def _mock(provider, handler):
@@ -117,7 +118,7 @@ def test_openai_payload():
 
 
 def test_tool_call_without_a_name():
-    from agent_mini.providers.base import parse_openai_tool_calls
+    from agent_mini.providers.parsing import parse_openai_tool_calls
     assert parse_openai_tool_calls([{"function": {"name": None, "arguments": "{}"}}])[0].name == ""
 
 

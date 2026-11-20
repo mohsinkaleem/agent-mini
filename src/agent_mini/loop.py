@@ -1,4 +1,19 @@
-"""The agent loop: ask the model, run the tools it calls, repeat until it answers."""
+"""The agent loop: ask the model, run the tools it calls, repeat until it answers.
+
+This is the heart of the agent, and ``AgentLoop.run()`` is the place to start
+reading. Stripped of everything else, it is:
+
+    messages = [system prompt, *history, user message]
+    repeat up to max_iterations times:
+        reply = model(messages, tool schemas)
+        if the reply has no tool calls: it is the answer; save the turn and return it
+        run the tool calls and append their results to messages
+
+The rest of this file handles what goes wrong in practice: a provider that
+fails (retries), a model stuck repeating itself (loop detection) and running
+out of iterations (a final summary). Fitting the messages into the context
+budget is in ``context.py``.
+"""
 
 from __future__ import annotations
 
@@ -8,14 +23,16 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import httpx
 
 from .config import with_defaults
+from .context import SUMMARIZE_AT, clip, prune, summarize_history
 from .memory import Memory
 from .prompt import build_system_prompt, context_overhead, estimate_messages_tokens, get_profile, num_ctx_for
-from .providers.base import ChatResponse, ModelInfo, Provider, StreamCallback, ToolCall, parse_text_tool_calls
+from .providers.base import ChatResponse, ModelInfo, Provider, StreamCallback, ToolCall
+from .providers.parsing import parse_text_tool_calls
 from .tools import Tools
 from .vision import image_parts
 
@@ -27,7 +44,7 @@ _TRANSIENT_CODES = {429, 500, 502, 503, 504}
 _TRANSIENT_ERRORS = (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError)
 _RETRIES = 3
 
-_SUMMARY_MARKER = "[Summary of the earlier conversation]"
+# Messages the loop adds when the model needs a push.
 _LOOP_NUDGE = "You repeated the same tool calls and got the same results. Try a different approach."
 _EMPTY_NUDGE = "Your last reply was empty. Reply to the user with a short answer."
 _STUCK_PROMPT = (
@@ -38,8 +55,13 @@ _LIMIT_PROMPT = (
     "You have reached the tool-call limit for this request. Do not call any more tools. "
     "Summarize what you did, what is left to do, and any partial result."
 )
-# The argument shown for each tool in the trace saved with a reply.
+
+# The trace saved with each reply ("[tools used: read_file(notes.txt), …]"):
+# the argument shown for each tool, and how many calls are listed.
 _TRACE_KEYS = ("path", "command", "query", "pattern", "url", "key")
+_TRACE_MAX = 12
+# Loop detection compares calls by name, arguments and the start of the result.
+_SIGNATURE_RESULT_CHARS = 500
 
 
 class ProviderError(Exception):
@@ -60,17 +82,44 @@ class ToolEvent:
 ToolEventCallback = Callable[[ToolEvent], Awaitable[None]]
 
 
+@dataclass
+class _Turn:
+    """What one ``run()`` keeps track of.
+
+    It lives only as long as the run, so two gateway users talking to the same
+    agent at once can't mix up each other's state.
+    """
+
+    user_message: str
+    conversation: list[dict]  # the saved history; the finished turn is appended to it
+    messages: list[dict]  # what the model sees: system prompt, history, this turn so far
+    tool_defs: list[dict]
+    known_names: set[str]  # tool names and aliases, for recovering calls written as text
+    trace: list[str] = field(default_factory=list)  # e.g. "read_file(notes.txt)"
+    signatures: list[str] = field(default_factory=list)  # one per tool call, for loop detection
+    tool_log: list[dict] = field(default_factory=list)  # for the run report
+    loop_nudges: int = 0
+    text_calls: int = 0  # tool calls recovered from the reply text
+    nudged_empty: bool = False
+
+
 def _trace_entry(name: str, arguments: dict) -> str:
+    """A short form of a call for the trace, e.g. ``read_file(notes.txt)``."""
     for key in _TRACE_KEYS:
         if key in arguments:
-            value = " ".join(str(arguments[key]).split())
-            return f"{name}({value[:57] + '…' if len(value) > 60 else value})"
+            value = " ".join(str(arguments[key]).split())  # on one line
+            if len(value) > 60:
+                value = value[:57] + "…"
+            return f"{name}({value})"
     return name
 
 
 def _is_looping(signatures: list[str]) -> bool:
-    """Four identical calls in a row, or an A→B→A→B oscillation."""
-    return len(signatures) >= 4 and signatures[-4] == signatures[-2] and signatures[-3] == signatures[-1]
+    """Four identical calls in a row (A A A A), or two alternating ones (A B A B)."""
+    if len(signatures) < 4:
+        return False
+    a, b, c, d = signatures[-4:]
+    return a == c and b == d
 
 
 def _with_note(text: str, note: str) -> str:
@@ -78,12 +127,7 @@ def _with_note(text: str, note: str) -> str:
 
 
 class AgentLoop:
-    """Runs the ReAct loop for one model, its tools and memory.
-
-    1. Send system prompt + history + user message.
-    2. If the model calls tools, run them, append the results, go to 1.
-    3. If it answers in text, save the turn and return the answer.
-    """
+    """Runs the loop for one model, its tools and memory."""
 
     def __init__(self, provider: Provider, config: dict, memory: Memory):
         self.provider = provider
@@ -110,6 +154,7 @@ class AgentLoop:
         defs = self.tools.definitions()
         num_ctx = num_ctx_for(profile, defs)
         if info and info.context_length:
+            # The model's window is smaller than the tier's budget needs: shrink the budget to fit.
             overhead = context_overhead(defs)
             if profile.context + overhead > info.context_length:
                 profile = replace(profile, context=max(1024, info.context_length - overhead))
@@ -147,94 +192,110 @@ class AgentLoop:
         on_thinking: StreamCallback | None = None,
     ) -> str:
         """Answer *user_message*. The turn is appended to *conversation* in place."""
+        turn = self._start_turn(user_message, conversation)
+
+        for iteration in range(1, self.max_iterations + 1):
+            self.turn_iterations = iteration
+
+            # 1. Ask the model, sending only what fits the context budget.
+            try:
+                response = await self._call(self._prune(turn.messages), turn.tool_defs, on_stream, on_thinking)
+            except ProviderError as e:
+                return self._finish(turn, "provider_error", f"Error communicating with LLM: {e}",
+                                    saved="[No reply: the model provider failed.]")
+            self._add_usage(response.usage)
+            calls, text = self._tool_calls_in(response, turn)
+
+            # 2. No tool calls: the model has answered.
+            if not calls:
+                if not text and turn.tool_log and not turn.nudged_empty:
+                    # Small-model fix: an empty reply after using tools gets one nudge.
+                    turn.nudged_empty = True
+                    turn.messages.append({"role": "user", "content": _EMPTY_NUDGE})
+                    continue
+                reply = self._finish(turn, "text", text or "(empty response)")
+                if estimate_messages_tokens(conversation) > self.profile.context * SUMMARIZE_AT:
+                    await self._summarize_history(conversation)
+                return reply
+
+            # 3. Run the tools and append their results; the next iteration shows them to the model.
+            await self._run_tools(turn, calls, text, on_tool_event)
+
+            # 4. Same calls with the same results: nudge once; the second time, stop and ask for an answer.
+            if _is_looping(turn.signatures):
+                turn.signatures.clear()
+                turn.loop_nudges += 1
+                if turn.loop_nudges >= 2:
+                    log.warning("Agent is repeating itself; asking for a final answer")
+                    reply = await self._final_answer(turn.messages, _STUCK_PROMPT)
+                    return self._finish(turn, "stuck", _with_note(reply, "[Stopped: repeated the same tool calls.]"))
+                log.info("Loop detected: nudging the model to change approach")
+                turn.messages.append({"role": "user", "content": _LOOP_NUDGE})
+
+        # Out of iterations: one last call without tools, so the user gets a summary instead of nothing.
+        reply = await self._final_answer(turn.messages, _LIMIT_PROMPT)
+        note = f"[Stopped: reached max iterations ({self.max_iterations}) before finishing.]"
+        return self._finish(turn, "max_iterations", _with_note(reply, note))
+
+    # ── The steps of a turn ──────────────────────────────────────────
+
+    def _start_turn(self, user_message: str, conversation: list[dict]) -> _Turn:
+        """Build the messages for this turn and reset the per-turn counters."""
         names = self.tools.names()
         memories = self.memory.recent(self.profile.memory_items) if "recall" in names else []
         system = build_system_prompt(self.config, names, self.profile, memories)
         content = image_parts(user_message, self.tools.workspace, self.allow_local_images) or user_message
-        messages = [{"role": "system", "content": system}, *conversation, {"role": "user", "content": content}]
-        defs, known = self.tools.definitions(), self.tools.known_names()
-
-        # Per-run state is local, so concurrent gateway users can't mix it up.
+        turn = _Turn(
+            user_message=user_message,
+            conversation=conversation,
+            messages=[{"role": "system", "content": system}, *conversation, {"role": "user", "content": content}],
+            tool_defs=self.tools.definitions(),
+            known_names=self.tools.known_names(),
+        )
         self.turn_usage = {k: 0 for k in self.session_usage}
-        trace: list[str] = []
-        signatures: list[str] = []
-        tool_log: list[dict] = []
-        nudges = text_calls = 0
-        nudged_empty = False
+        # Kept up to date as the turn goes, so an interrupted run can still be reported.
+        self.last_run = {"finish_reason": "interrupted", "reply": "", "tool_calls": turn.tool_log,
+                         "usage": self.turn_usage, "messages": turn.messages}
+        return turn
 
-        # Kept up to date, so an interrupted run can still be reported.
-        self.last_run = {"finish_reason": "interrupted", "reply": "", "tool_calls": tool_log,
-                         "usage": self.turn_usage, "messages": messages}
+    def _add_usage(self, usage: dict | None) -> None:
+        for key, value in (usage or {}).items():
+            if key in self.turn_usage:
+                self.turn_usage[key] += value or 0
+                self.session_usage[key] += value or 0
 
-        def finish(reason: str, reply: str, saved: str | None = None) -> str:
-            self._record(conversation, user_message, saved or reply, trace)
-            self.finish_reason = reason
-            self.last_run.update(finish_reason=reason, reply=reply, iterations=self.turn_iterations,
-                                 text_tool_calls=text_calls, loop_nudges=nudges)
-            return reply
+    def _tool_calls_in(self, response: ChatResponse, turn: _Turn) -> tuple[list[ToolCall], str]:
+        """The tool calls in a reply, and its text."""
+        calls, text = response.tool_calls or [], (response.content or "").strip()
+        if not calls and text:
+            # Small-model fix: the model wrote its tool calls as text instead of making them.
+            calls, text = parse_text_tool_calls(text, turn.known_names)
+            if calls:
+                turn.text_calls += len(calls)
+                log.info("Recovered %d tool call(s) written as text", len(calls))
+        return calls, text
 
-        for iteration in range(1, self.max_iterations + 1):
-            self.turn_iterations = iteration
-            try:
-                response = await self._call(self._prune(messages), defs, on_stream, on_thinking)
-            except ProviderError as e:
-                return finish("provider_error", f"Error communicating with LLM: {e}",
-                              "[No reply: the model provider failed.]")
-            for key, value in (response.usage or {}).items():
-                if key in self.turn_usage:
-                    self.turn_usage[key] += value or 0
-                    self.session_usage[key] += value or 0
-
-            calls, text = response.tool_calls or [], (response.content or "").strip()
-            if not calls and text:
-                calls, text = parse_text_tool_calls(text, known)
-                if calls:
-                    text_calls += len(calls)
-                    log.info("Recovered %d tool call(s) written as text", len(calls))
-            if not calls:
-                if not text and tool_log and not nudged_empty:
-                    nudged_empty = True
-                    messages.append({"role": "user", "content": _EMPTY_NUDGE})
-                    continue
-                reply = finish("text", text or "(empty response)")
-                if estimate_messages_tokens(conversation) > self.profile.context * 0.75:
-                    await self._summarize_history(conversation)
-                return reply
-
-            messages.append({"role": "assistant", "content": text, "tool_calls": [
-                {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
+    async def _run_tools(self, turn: _Turn, calls: list[ToolCall], text: str,
+                         on_tool_event: ToolEventCallback | None) -> None:
+        """Run the calls in parallel; append the assistant's message and every result to the messages."""
+        turn.messages.append({
+            "role": "assistant",
+            "content": text,
+            "tool_calls": [
+                {"id": tc.id, "type": "function",
+                 "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
                 for tc in calls
-            ]})
-            results = await asyncio.gather(*(self._run_tool(tc, on_tool_event) for tc in calls))
-            for tc, result in zip(calls, results):
-                trace.append(_trace_entry(tc.name, tc.arguments))
-                tool_log.append({"name": tc.name, "args": tc.arguments, "error": result.startswith("Error:")})
-                signatures.append(json.dumps([tc.name, tc.arguments, result[:500]], sort_keys=True, default=str))
-                messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name,
-                                 "content": self._clip(tc.name, result)})
-
-            # Same calls with the same results: nudge once, then stop and ask for an answer.
-            if _is_looping(signatures):
-                signatures.clear()
-                nudges += 1
-                if nudges >= 2:
-                    log.warning("Agent is repeating itself; asking for a final answer")
-                    reply = await self._final_answer(messages, _STUCK_PROMPT)
-                    return finish("stuck", _with_note(reply, "[Stopped: repeated the same tool calls.]"))
-                log.info("Loop detected: nudging the model to change approach")
-                messages.append({"role": "user", "content": _LOOP_NUDGE})
-
-        # Out of iterations: one last call without tools, so the user gets a summary instead of nothing.
-        reply = await self._final_answer(messages, _LIMIT_PROMPT)
-        note = f"[Stopped: reached max iterations ({self.max_iterations}) before finishing.]"
-        return finish("max_iterations", _with_note(reply, note))
-
-    @staticmethod
-    def _record(conversation: list[dict], user_message: str, reply: str, trace: list[str]) -> None:
-        """Save the turn. The tool trace tells later turns which files were touched."""
-        if trace:
-            reply += "\n\n[tools used: " + ", ".join(trace[:12] + (["…"] if len(trace) > 12 else [])) + "]"
-        conversation += [{"role": "user", "content": user_message}, {"role": "assistant", "content": reply}]
+            ],
+        })
+        results = await asyncio.gather(*(self._run_tool(tc, on_tool_event) for tc in calls))
+        for tc, result in zip(calls, results):
+            turn.trace.append(_trace_entry(tc.name, tc.arguments))
+            turn.tool_log.append({"name": tc.name, "args": tc.arguments, "error": result.startswith("Error:")})
+            signature = [tc.name, tc.arguments, result[:_SIGNATURE_RESULT_CHARS]]
+            turn.signatures.append(json.dumps(signature, sort_keys=True, default=str))
+            # The tool_call_id ties each result to the call that asked for it.
+            turn.messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name,
+                                  "content": clip(tc.name, result, self.profile.output_limit)})
 
     async def _run_tool(self, tc: ToolCall, on_tool_event: ToolEventCallback | None) -> str:
         if on_tool_event:
@@ -247,15 +308,26 @@ class AgentLoop:
                                           duration=time.monotonic() - started))
         return result
 
-    def _clip(self, name: str, result: str) -> str:
-        """Head and tail of a result longer than the tier allows."""
-        limit = self.profile.output_limit
-        if len(result) <= limit:
-            return result
-        head, tail = limit * 2 // 3, limit // 3
-        hint = {"read_file": " Use offset/limit to read a specific range.",
-                "shell": " Pipe the output through grep, head or tail to see the part you need."}.get(name, "")
-        return f"{result[:head]}\n\n[... {len(result) - head - tail} characters cut.{hint}]\n\n{result[-tail:]}"
+    def _finish(self, turn: _Turn, reason: str, reply: str, saved: str | None = None) -> str:
+        """End the turn: save it to the conversation, record how it ended, return the reply.
+
+        *saved*, if given, is what the history keeps instead of the reply.
+        """
+        self._record(turn.conversation, turn.user_message, saved or reply, turn.trace)
+        self.finish_reason = reason
+        self.last_run.update(finish_reason=reason, reply=reply, iterations=self.turn_iterations,
+                             text_tool_calls=turn.text_calls, loop_nudges=turn.loop_nudges)
+        return reply
+
+    @staticmethod
+    def _record(conversation: list[dict], user_message: str, reply: str, trace: list[str]) -> None:
+        """Save the turn. The tool trace tells later turns which files were touched."""
+        if trace:
+            shown = trace[:_TRACE_MAX] + (["…"] if len(trace) > _TRACE_MAX else [])
+            reply += "\n\n[tools used: " + ", ".join(shown) + "]"
+        conversation += [{"role": "user", "content": user_message}, {"role": "assistant", "content": reply}]
+
+    # ── Talking to the model ─────────────────────────────────────────
 
     async def _call(self, messages: list[dict], defs: list[dict], on_stream, on_thinking) -> ChatResponse:
         """Call the model, retrying transient failures with jittered backoff."""
@@ -294,67 +366,10 @@ class AgentLoop:
             return ""
         return (response.content or "").strip()
 
-    # ── Context budget ───────────────────────────────────────────────
+    # ── Context budget (see context.py) ──────────────────────────────
 
     def _prune(self, messages: list[dict]) -> list[dict]:
-        """A copy of *messages* that fits the context budget.
-
-        Tool results older than the last three assistant turns are cut to head
-        and tail. If the request is still too big, the oldest results (never
-        the latest round) become one-line stubs.
-        """
-        asst = [i for i, m in enumerate(messages) if m["role"] == "assistant"]
-        cutoff = asst[-3] if len(asst) >= 3 else 0
-        soft = max(1000, self.profile.output_limit // 2)
-        pruned = []
-        for i, msg in enumerate(messages):
-            text = msg.get("content") or ""
-            if i < cutoff and msg["role"] == "tool" and len(text) > soft:
-                msg = {**msg, "content": text[: soft // 2] + "\n...\n" + text[-soft // 2:]}
-            pruned.append(msg)
-
-        total = estimate_messages_tokens(pruned)
-        for i in range(asst[-1] if asst else 0):
-            if total <= self.profile.context:
-                break
-            msg = pruned[i]
-            if msg["role"] != "tool" or msg["content"].startswith("[cleared"):
-                continue
-            stub = {**msg, "content": f"[cleared to save context: {msg.get('name', 'tool')} output, "
-                                      f"{len(msg['content'])} chars. Run the tool again if you need it.]"}
-            total -= estimate_messages_tokens([msg]) - estimate_messages_tokens([stub])
-            pruned[i] = stub
-        return pruned
+        return prune(messages, self.profile)
 
     async def _summarize_history(self, conversation: list[dict]) -> None:
-        """Replace older turns with a short summary so the history stays within budget.
-
-        The latest exchange is always kept, and the kept part starts on a user turn.
-        """
-        target = self.profile.context // 2
-        cut = len(conversation) - 2
-        while cut >= 2 and estimate_messages_tokens(conversation[cut - 2:]) <= target:
-            cut -= 2
-        while cut > 0 and conversation[cut]["role"] != "user":
-            cut -= 1
-        if cut <= 0:
-            return
-        lines = []
-        for m in conversation[:cut]:
-            text = m.get("content")
-            if isinstance(text, str) and text:
-                # An earlier summary is carried over whole; other messages are clipped.
-                lines.append(f"[{m['role']}]: {text if text.startswith(_SUMMARY_MARKER) else text[:500]}")
-        request = [
-            {"role": "system", "content": "Summarize in under 200 words. Keep file paths, error messages, code "
-                                          "snippets and key decisions verbatim. Say what was done and what remains."},
-            {"role": "user", "content": "\n".join(lines)},
-        ]
-        try:
-            response = await self.provider.chat(request, tools=None, temperature=0.3)
-        except Exception as e:
-            log.warning("Failed to summarize history: %s", e)
-            return
-        # A user message, not a second system message: small models anchor on one system prompt.
-        summary = {"role": "user", "content": f"{_SUMMARY_MARKER}\n{response.content or 'Earlier conversation.'}"}
-        conversation[:] = [summary, *conversation[cut:]]
+        await summarize_history(self.provider, conversation, self.profile.context)

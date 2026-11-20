@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-mini"
-version = "0.5.0"
+version = "0.6.0"
 description = "A small, local-first AI agent tuned for small local models: shell, files, web and memory over Ollama or any OpenAI-compatible API"
 readme = "README.md"
 license = "MIT"

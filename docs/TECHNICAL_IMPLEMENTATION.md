@@ -1,6 +1,6 @@
 # Agent Mini — Technical Implementation
 
-How Agent Mini is built and why. The package is about 3,000 lines of Python on `httpx`, `asyncio`, `click` and `rich`, with no agent framework. Read it alongside the source: each section names the file it describes.
+How Agent Mini is built and why. The package is about 3,500 lines of Python on `httpx`, `asyncio`, `click` and `rich`, with no agent framework. Read it alongside the source: each section names the file it describes. Workarounds for small models are marked `# Small-model fix:` in the source. To learn how an agent works from the ground up, start with [LEARN.md](LEARN.md).
 
 ---
 
@@ -23,15 +23,19 @@ flowchart LR
 |---|---|
 | `cli.py` | `init`, `chat` (REPL and `-m`), `doctor`, `gateway`; terminal rendering and approval prompts |
 | `config.py` | `DEFAULTS` (the only place a default lives), `with_defaults()` (merge and validate), file paths |
-| `loop.py` | `AgentLoop`: the loop, retries, loop detection, context pruning, history summaries, run reports |
+| `loop.py` | `AgentLoop`: the loop, retries, loop detection, run reports |
+| `context.py` | The context budget: clipping tool results, pruning old ones, summarizing history |
 | `prompt.py` | Model tiers and their budgets, token estimates, the system prompt |
-| `tools.py` | The tool registry, file and shell tools, sandbox, approval, undo, plugins |
+| `tools.py` | The tool registry, the tools, approval, undo, plugins |
+| `sandbox.py` | Workspace paths, the command blocklist, the shell's environment, killable processes |
+| `editing.py` | How `edit_file` matches `old_text`: exactly, then line by line ignoring whitespace |
+| `forgiving.py` | The tool and argument names small models use instead of ours |
 | `web.py` | `web_search` (DuckDuckGo), `web_fetch`, HTML to text, the SSRF guard |
 | `memory.py` | A JSON list of facts with keyword search |
 | `vision.py` | Image paths and URLs in a message become image content parts |
 | `sessions.py` | Conversations saved as JSON after every turn |
 | `telegram.py` | The gateway: per-user conversations and locks, startup policy for public bots |
-| `providers/` | `base.py` (types, tool-call parsing, JSON repair), `ollama.py`, `openai.py` |
+| `providers/` | `base.py` (types, the `Provider` interface), `parsing.py` (tool calls, JSON repair, calls written as text), `ollama.py`, `openai.py` |
 
 ---
 
@@ -65,15 +69,15 @@ Every exit goes through `finish()`, which records the turn and the run report. `
 ### 3.2 Robustness
 
 - **Retries.** Connection errors and HTTP 429/5xx are retried three times with jittered backoff, but not after any text was streamed (it would be shown twice). Read timeouts are not retried. A final failure raises `ProviderError`; the turn is recorded as `[No reply: the model provider failed.]` so the next turn knows.
-- **Text tool calls.** When a response has no native tool calls, `parse_text_tool_calls` looks for `<tool_call>…</tool_call>`, `[TOOL_CALLS] […]`, fenced JSON or bare JSON naming a known tool (aliases included). A fenced block inside a long answer is treated as an example, not a call.
+- **Text tool calls.** When a response has no native tool calls, `parse_text_tool_calls` (`providers/parsing.py`) looks for `<tool_call>…</tool_call>`, `[TOOL_CALLS] […]`, fenced JSON or bare JSON naming a known tool (aliases included). A fenced block inside a long answer is treated as an example, not a call.
 - **Clipping.** A result longer than the tier's `output_limit` keeps its head (2/3) and tail (1/3), with a hint: `read_file` suggests `offset`/`limit`, `shell` suggests `grep`/`tail`.
 - **Graceful stops.** Hitting the iteration limit or getting stuck ends with one call *without tools* asking for a summary of what was done and what is left, so the user gets something useful.
 
-### 3.3 Context budget
+### 3.3 Context budget (`context.py`)
 
-`_prune()` works on a copy before every call. Tool results older than the last three assistant turns are cut to head and tail. If the request is still over the tier's `context` budget, the oldest results (never the latest round) become one-line stubs: `[cleared to save context: read_file output, 8000 chars. Run the tool again if you need it.]`.
+`prune()` works on a copy before every call. Tool results older than the last three assistant turns are cut to head and tail. If the request is still over the tier's `context` budget, the oldest results (never the latest round) become one-line stubs: `[cleared to save context: read_file output, 8000 chars. Run the tool again if you need it.]`.
 
-After a turn, if the saved history is over 75% of the budget, `_summarize_history()` replaces the oldest turns with a summary (a `user` message, so small models still see one system prompt). It keeps whole exchanges from the end until about half the budget is used, always keeps the latest exchange, and starts the kept part on a user turn. An earlier summary is passed into the new one whole. If the summary call fails, nothing is dropped.
+After a turn, if the saved history is over 75% of the budget, `summarize_history()` replaces the oldest turns with a summary (a `user` message, so small models still see one system prompt). It keeps whole exchanges from the end until about half the budget is used, always keeps the latest exchange, and starts the kept part on a user turn. An earlier summary is passed into the new one whole. If the summary call fails, nothing is dropped.
 
 ---
 
@@ -131,7 +135,7 @@ The first rule comes from the evals. An earlier "answer general questions direct
 
 - **Ollama** (`ollama.py`) uses the native `/api/chat` because only it accepts `num_ctx`. It always streams and assembles the result, so there is one parser; tool calls may arrive over several chunks. `to_ollama()` gives assistant tool calls object arguments, tool results a `tool_name`, and turns `image_url` parts into the `images` field. `model_info()` reads size, context length and capabilities from `/api/show`; `doctor` and the CLI warn when the model has no `tools` capability. Errors carry the server's message plus a hint (`run: ollama pull …`).
 - **OpenAI-compatible** (`openai.py`) serves both `openai` and `local`. It streams only when a callback is given, because some servers can't stream tool calls; streamed tool calls are assembled by index, the order the model emitted them. `reasoning_content` is read as thinking. OpenAI's `o*` and `gpt-5*` models never get a temperature (they reject it).
-- **Arguments** go through `parse_arguments`: valid JSON, or a repair pass (code fences, trailing commas, single quotes, unquoted keys). If that fails the call carries `__invalid_json__`, and the tool answers with an error asking the model to resend valid JSON instead of running with `{}`.
+- **Arguments** go through `parse_arguments` (`parsing.py`): valid JSON, or a repair pass (code fences, trailing commas, single quotes, unquoted keys). If that fails the call carries `__invalid_json__`, and the tool answers with an error asking the model to resend valid JSON instead of running with `{}`.
 
 ---
 
@@ -144,12 +148,12 @@ A tool is a `Tools` method marked with `@tool(description, writes=…, **param_d
 `execute(name, arguments)` is the only entry point and never raises:
 
 1. Resolve the name, accepting aliases models use and the names from before 0.5 (`shell_exec`, `bash`, `code_edit`, `str_replace`, `list_directory`, `find_files`, `memory_store`, …). A tool removed by the sandbox or by `memory.enabled: false` answers "not available: the workspace is read-only". An unknown name that is a program on `PATH` (`python`, `git`) gets "call shell with the command".
-2. Normalize arguments: aliased names (`file_path` → `path`, `cmd` → `command`, `old_string` → `old_text`), numbers sent as strings, objects sent as file content (serialized as JSON). `null` counts as not given. Unknown arguments are dropped for built-ins.
+2. Normalize arguments (`forgiving.py`): aliased names (`file_path` → `path`, `cmd` → `command`, `old_string` → `old_text`), numbers sent as strings, objects sent as file content (serialized as JSON). `null` counts as not given. Unknown arguments are dropped for built-ins.
 3. Check required arguments, naming what was expected: `Error: missing command for shell. Expected {"command": <string>}`.
 4. Ask the approver for tools in `tools.confirm`; with no approver (gateway, non-interactive `-m`) the call is denied with a message telling the model to explain instead.
 5. Run it; an exception becomes `Error: <Type>: <message>`.
 
-### 7.2 Paths and the sandbox
+### 7.2 Paths and the sandbox (`sandbox.py`)
 
 | Level | Tools | Paths |
 |---|---|---|
@@ -164,7 +168,7 @@ Relative paths resolve against the workspace. In the two restricted levels, an a
 - `shell`: `asyncio.create_subprocess_shell` in the workspace with stdin closed (a command that prompts gets EOF instead of hanging), in its own session so a timeout (`tools.shellTimeout`) or a cancelled turn (Ctrl+C, an eval timeout) kills the whole process group. stdout and stderr are both returned; a failure adds `[exit code: N]` without the `Error:` prefix (grep exiting 1 is not a failure). A blocklist refuses `rm` with recursive and force flags in any order, `sudo`, `mkfs`, `dd if=`, fork bombs and `chmod`/`chown` on `/`; it is friction, not a boundary. Env vars that look like secrets are not passed on unless listed in `tools.shellEnvAllow`.
 - `read_file`: text with an optional `offset`/`limit` line range (`[lines 3-4 of 10]`; a negative offset counts from the end, which is what small models try for the tail of a log); refuses binary files; a missing file or a directory gets an error that says so.
 - `write_file`: creates parent folders; `Wrote notes.txt (3 lines).` It won't replace an existing file the agent hasn't read or written in this session: in the evals a 9B model "appended" a line to a script by writing only that line.
-- `edit_file`: exact match first; if there is none, a line-by-line match ignoring surrounding whitespace. When `old_text` and `new_text` are shifted the same way relative to the file (usually: copied without their indentation), the new text is shifted back; when they disagree, `new_text` is trusted as written (a stray tab in `old_text` must not strip the tabs a Makefile needs). Several matches ask for more context; none shows the closest region (difflib, ≥60% similar). CRLF files stay CRLF; non-UTF-8 files are refused. The result shows the edited lines, which saves the model a `read_file`.
+- `edit_file`: exact match first; if there is none, a line-by-line match ignoring surrounding whitespace. When `old_text` and `new_text` are shifted the same way relative to the file (usually: copied without their indentation), the new text is shifted back; when they disagree, `new_text` is trusted as written (a stray tab in `old_text` must not strip the tabs a Makefile needs). Several matches ask for more context; none shows the closest region (difflib, ≥60% similar). CRLF files stay CRLF; non-UTF-8 files are refused. The result shows the edited lines, which saves the model a `read_file`. The matching is in `editing.py`.
 - `list_files`: without a pattern, the directory (folders end with `/`, capped at 200); with one, a recursive glob in which `*.py` matches at any depth and `**/` also matches no folder. `.git`, `node_modules`, `.venv` and caches are skipped.
 - `search_files`: ripgrep (or grep) with workspace-relative paths; `-e` and `--` keep a pattern starting with `-` from being read as a flag.
 - `web_search`: DuckDuckGo's lite endpoint, then the HTML one. A rate-limit or challenge page is an error that says *do not retry*; small models otherwise repeat the query until they run out of iterations.

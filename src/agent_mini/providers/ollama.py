@@ -8,16 +8,8 @@ import re
 import httpx
 
 from ..prompt import MAX_REPLY_TOKENS
-from .base import (
-    INVALID_ARGS_KEY,
-    ChatResponse,
-    ModelInfo,
-    Provider,
-    StreamCallback,
-    parse_arguments,
-    parse_openai_tool_calls,
-    raise_for_status,
-)
+from .base import ChatResponse, ModelInfo, Provider, StreamCallback, raise_for_status
+from .parsing import INVALID_ARGS_KEY, parse_arguments, parse_openai_tool_calls
 
 _PARAM_SIZE = re.compile(r"([\d.]+)\s*([KMBT]?)", re.IGNORECASE)
 _SCALE = {"K": 1e-6, "M": 1e-3, "B": 1.0, "T": 1e3, "": 1e-9}

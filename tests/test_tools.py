@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_mini.memory import Memory
-from agent_mini.providers.base import INVALID_ARGS_KEY
+from agent_mini.providers.parsing import INVALID_ARGS_KEY
 from agent_mini.tools import Tools
 
 

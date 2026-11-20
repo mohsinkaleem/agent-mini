@@ -1,23 +1,21 @@
-"""Base provider interface and common types."""
+"""What every provider has in common: the types the loop works with, and the ``Provider`` interface.
+
+Turning a server's raw tool calls into ``ToolCall`` objects is in ``parsing.py``.
+"""
 
 from __future__ import annotations
 
 import json
-import logging
-import re
 import uuid
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
-
-log = logging.getLogger("agent-mini")
 
 
 @dataclass
 class ToolCall:
-    """A single tool/function call from the LLM."""
+    """The model asking to run one tool. ``id`` links the tool's result back to this call."""
 
     id: str
     name: str
@@ -26,7 +24,7 @@ class ToolCall:
 
 @dataclass
 class ChatResponse:
-    """Standardised LLM response across all providers."""
+    """One reply from the model, the same shape for every provider: text, tool calls, or both."""
 
     content: str | None = None
     tool_calls: list[ToolCall] | None = None
@@ -43,134 +41,13 @@ class ModelInfo:
     capabilities: list[str] | None = None  # e.g. ["completion", "tools", "vision"]
 
 
+# Called with each piece of text as it streams in.
 StreamCallback = Callable[[str], Awaitable[None]]
-
-# Set by parse_arguments when the raw arguments could not be turned into a dict,
-# so the tool executor can tell the model instead of running with {}.
-INVALID_ARGS_KEY = "__invalid_json__"
 
 
 def new_call_id() -> str:
     """Unique tool-call ID for servers that omit one (reusing call_0 confuses some)."""
     return f"call_{uuid.uuid4().hex[:12]}"
-
-
-def _repair_json(s: str) -> dict | None:
-    """Attempt common JSON repairs for malformed small-model outputs."""
-    # Strip markdown code fences
-    s = re.sub(r"^```(?:json)?\s*", "", s)
-    s = re.sub(r"\s*```$", "", s)
-    s = s.strip()
-    # Fix trailing commas
-    s = re.sub(r",\s*}", "}", s)
-    s = re.sub(r",\s*]", "]", s)
-    # Fix single quotes → double quotes (simple heuristic)
-    if "'" in s and '"' not in s:
-        s = s.replace("'", '"')
-    # Fix unquoted keys: word: -> "word":
-    s = re.sub(r"(?<=[{,\s])(\w+)\s*:", r'"\1":', s)
-    try:
-        parsed = json.loads(s)
-        return parsed if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
-        return None
-
-
-def parse_arguments(raw: Any) -> dict:
-    """Normalize tool/function arguments into a dict."""
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
-        raw = raw.strip()
-        if not raw:
-            return {}
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-            log.warning("Tool arguments parsed as %s instead of dict", type(parsed).__name__)
-            return {INVALID_ARGS_KEY: raw[:500]}
-        except json.JSONDecodeError:
-            # Attempt repair before giving up
-            repaired = _repair_json(raw)
-            if repaired is not None:
-                log.info("Repaired malformed tool arguments JSON")
-                return repaired
-            log.warning("Failed to parse tool arguments as JSON: %s", raw[:200])
-            return {INVALID_ARGS_KEY: raw[:500]}
-    return {}
-
-
-def parse_openai_tool_calls(raw: list[dict] | None) -> list[ToolCall] | None:
-    """Convert OpenAI-style tool calls into ``ToolCall`` objects."""
-    calls = [
-        ToolCall(
-            id=tc.get("id") or new_call_id(),
-            name=tc.get("function", {}).get("name") or "",
-            arguments=parse_arguments(tc.get("function", {}).get("arguments", {})),
-        )
-        for tc in raw or []
-    ]
-    return calls or None
-
-
-# Ways models write tool calls as text when native tool calling fails:
-# Hermes/Qwen tags, Mistral's marker, and fenced JSON blocks.
-_TOOL_CALL_TAG = re.compile(r"<tool_call>\s*(.*?)\s*(?:</tool_call>|$)", re.DOTALL)
-_MISTRAL_CALLS = re.compile(r"\[TOOL_CALLS\]\s*(\[.*\]|\{.*\})", re.DOTALL)
-_FENCED_JSON = re.compile(r"```(?:json|tool_call|tool_code)?\s*(\{.*?\}|\[.*?\])\s*```", re.DOTALL)
-
-
-def _load_json(text: str) -> Any:
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return _repair_json(text)
-
-
-def _as_tool_calls(obj: Any, known: set[str]) -> list[ToolCall]:
-    """Turn ``{"name", "arguments"|"parameters"}`` (or a list of them) into calls."""
-    calls: list[ToolCall] = []
-    for item in obj if isinstance(obj, list) else [obj]:
-        if not isinstance(item, dict):
-            return []
-        if isinstance(item.get("function"), dict):
-            item = item["function"]
-        if item.get("name") not in known:
-            return []
-        args = item.get("arguments", item.get("parameters", {}))
-        calls.append(ToolCall(id=new_call_id(), name=item["name"], arguments=parse_arguments(args)))
-    return calls
-
-
-def parse_text_tool_calls(content: str | None, known: Iterable[str]) -> tuple[list[ToolCall], str]:
-    """Recover tool calls a model wrote in its text instead of as native tool calls.
-
-    Only calls to *known* tool names count. Returns ``(calls, remaining_text)``;
-    ``calls`` is empty when nothing was found.
-    """
-    known = set(known)
-    if not content or not any(name in content for name in known):
-        return [], content or ""
-    for pattern in (_TOOL_CALL_TAG, _MISTRAL_CALLS, _FENCED_JSON):
-        calls: list[ToolCall] = []
-        rest = content
-        for m in pattern.finditer(content):
-            obj = _load_json(m.group(1))
-            found = _as_tool_calls(obj, known) if obj is not None else []
-            if found:
-                calls.extend(found)
-                rest = rest.replace(m.group(0), "", 1)
-        # A fenced block inside a long answer is more likely an example than a call.
-        if calls and not (pattern is _FENCED_JSON and len(rest.strip()) > 300):
-            return calls, rest.strip()
-    bare = content.strip().removeprefix("<|python_tag|>").strip()
-    if bare.startswith(("{", "[")):
-        obj = _load_json(bare)
-        calls = _as_tool_calls(obj, known) if obj is not None else []
-        if calls:
-            return calls, ""
-    return [], content
 
 
 def _error_message(resp: httpx.Response) -> str:

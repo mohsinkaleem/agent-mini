@@ -8,15 +8,8 @@ import re
 import httpx
 
 from ..prompt import MAX_REPLY_TOKENS
-from .base import (
-    ChatResponse,
-    Provider,
-    ToolCall,
-    new_call_id,
-    parse_arguments,
-    parse_openai_tool_calls,
-    raise_for_status,
-)
+from .base import ChatResponse, Provider, ToolCall, new_call_id, raise_for_status
+from .parsing import parse_arguments, parse_openai_tool_calls
 
 # OpenAI reasoning models return 400 for any temperature other than the default.
 _NO_TEMPERATURE = re.compile(r"^(?:o\d|gpt-5)", re.IGNORECASE)

@@ -7,7 +7,7 @@
 
 A small, local-first AI agent you can read in an afternoon: shell, files, web and memory, driven by a small model on your own machine (tuned on 4B and 9B) or by any OpenAI-compatible API.
 
-- **About 3,000 lines of Python**, no frameworks: `httpx`, `click`, `rich`, and nothing else
+- **About 3,500 lines of Python**, no frameworks: `httpx`, `click`, `rich`, and nothing else
 - **Built for small models**: tuned and measured on 4B and 9B models with a [task-eval harness](evals/): on the release candidate, qwen3.5:4b went from 88% to 97% of runs passed with about a quarter fewer tool calls
 - **Local-first**: Ollama by default, OpenAI or any OpenAI-compatible server (LM Studio, vLLM, llama.cpp) if you prefer
 - **Tools**: shell, read/write/edit files, list and search, web search and fetch, persistent memory, plus your own plugins
@@ -30,6 +30,10 @@ One-shot use from scripts:
 ```bash
 agent-mini chat -m "How many TODOs are in src/? Reply with just the number." --workspace .
 ```
+
+## Learning from it
+
+New to agents? [docs/LEARN.md](docs/LEARN.md) starts with [a whole agent in about 100 lines](examples/minimal_agent.py), shows what breaks when you point it at a real model, and then walks through how this agent handles each problem, with a reading order and exercises.
 
 ## What makes it work on small models
 
@@ -193,18 +197,28 @@ Files live in `~/.agent-mini/` (or `$AGENT_MINI_HOME`): `config.json`, `memory.j
 src/agent_mini/
 ├── cli.py          # init, chat (REPL and -m), doctor, gateway
 ├── config.py       # defaults, validation, files
-├── loop.py         # the ReAct loop: call the model, run tools, prune, summarize, retry
+├── loop.py         # the ReAct loop: call the model, run tools, retry, detect loops
+├── context.py      # keep the conversation in budget: clip, prune, summarize
 ├── prompt.py       # model tiers, token budgets, the system prompt
-├── tools.py        # tool registry, file and shell tools, sandbox, approval, undo, plugins
+├── tools.py        # tool registry and the tools, approval, undo, plugins
+├── sandbox.py      # workspace paths, blocked commands, secret env vars, processes
+├── editing.py      # how edit_file finds its text: exact, then ignoring whitespace
+├── forgiving.py    # the tool and argument names small models use instead of ours
 ├── web.py          # web_search, web_fetch, SSRF guard
 ├── memory.py       # JSON memory with keyword search
 ├── vision.py       # image paths and URLs → image parts
 ├── sessions.py     # saved conversations
 ├── telegram.py     # Telegram gateway
-└── providers/      # base types and tool-call parsing, ollama.py, openai.py
+└── providers/
+    ├── base.py     # the types the loop uses, and the Provider interface
+    ├── parsing.py  # raw tool calls → ToolCall; JSON repair; calls written as text
+    ├── ollama.py   # Ollama's native API
+    └── openai.py   # OpenAI and any OpenAI-compatible server
+examples/
+└── minimal_agent.py  # the same idea in about 100 lines, for learning
 ```
 
-`AgentLoop.run()` sends the system prompt, history and message; runs the tools the model calls (in parallel); feeds back the results, clipped to the tier's limit; and repeats until the model answers in text, the iteration limit is hit (one last call without tools then summarizes), or the model repeats itself (one nudge, then a forced answer). [docs/TECHNICAL_IMPLEMENTATION.md](docs/TECHNICAL_IMPLEMENTATION.md) has the details. For a plain-English, interactive tour (architecture diagram, a step-by-step walk through one message, a tool call checker), open [docs/how-it-works.html](docs/how-it-works.html).
+`AgentLoop.run()` sends the system prompt, history and message; runs the tools the model calls (in parallel); feeds back the results, clipped to the tier's limit; and repeats until the model answers in text, the iteration limit is hit (one last call without tools then summarizes), or the model repeats itself (one nudge, then a forced answer). Workarounds for small models are marked `# Small-model fix:` in the source, so you can skip them on a first read. [docs/TECHNICAL_IMPLEMENTATION.md](docs/TECHNICAL_IMPLEMENTATION.md) has the details. For a plain-English, interactive tour (architecture diagram, a step-by-step walk through one message, a tool call checker), open [docs/how-it-works.html](docs/how-it-works.html).
 
 ## Development
 
@@ -212,7 +226,7 @@ src/agent_mini/
 git clone https://github.com/mohsinkaleem/agent-mini.git && cd agent-mini
 uv sync --extra dev
 uv run pytest            # unit tests, plus a check that every eval task's checks are valid
-uv run ruff check src tests evals
+uv run ruff check src tests evals examples
 ```
 
 ### Evals

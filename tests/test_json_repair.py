@@ -1,7 +1,7 @@
 """Tool-argument JSON repair."""
 
 
-from agent_mini.providers.base import INVALID_ARGS_KEY, parse_arguments
+from agent_mini.providers.parsing import INVALID_ARGS_KEY, parse_arguments
 
 
 class TestParseArgumentsRepair:

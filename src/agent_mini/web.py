@@ -129,8 +129,8 @@ _ENDPOINTS = (
 async def web_search(client: httpx.AsyncClient, query: str) -> str:
     """Search DuckDuckGo (free, no key).
 
-    Failures say not to retry: small models otherwise repeat the same query
-    until they run out of iterations.
+    Small-model fix: failures say not to retry, because small models otherwise
+    repeat the same query until they run out of iterations.
     """
     failures = []
     for url, parse in _ENDPOINTS:

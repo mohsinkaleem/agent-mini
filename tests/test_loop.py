@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
-from agent_mini.loop import _SUMMARY_MARKER, AgentLoop
+from agent_mini.context import SUMMARY_MARKER
+from agent_mini.loop import AgentLoop
 from agent_mini.prompt import estimate_messages_tokens, num_ctx_for
 from agent_mini.providers.base import ChatResponse, ModelInfo, ToolCall
 from tests.conftest import fake_provider
@@ -283,7 +284,7 @@ async def test_long_history_is_summarized_after_the_turn(config, memory):
                          {"role": "assistant", "content": f"answer {i} " + "y" * 480}]
     agent = _agent(config, memory, [ChatResponse(content="ok"), ChatResponse(content="Summary.")])
     await agent.run("one more", conversation)
-    assert conversation[0]["content"] == f"{_SUMMARY_MARKER}\nSummary."
+    assert conversation[0]["content"] == f"{SUMMARY_MARKER}\nSummary."
     assert conversation[-2:] == [{"role": "user", "content": "one more"}, {"role": "assistant", "content": "ok"}]
     assert estimate_messages_tokens(conversation) < agent.profile.context * 0.75
 
@@ -305,11 +306,11 @@ async def test_summary_keeps_the_latest_exchange(config, memory):
 
 async def test_summary_starts_kept_history_on_a_user_turn(config, memory):
     agent = _agent(config, memory, [ChatResponse(content="summary")])
-    conversation = [{"role": "user", "content": f"{_SUMMARY_MARKER}\n" + "s" * 900}]
+    conversation = [{"role": "user", "content": f"{SUMMARY_MARKER}\n" + "s" * 900}]
     for i in range(12):
         conversation.append({"role": "assistant" if i % 2 == 0 else "user", "content": f"m{i} " + "x" * 2000})
     await agent._summarize_history(conversation)
-    assert conversation[0]["content"] == f"{_SUMMARY_MARKER}\nsummary"
+    assert conversation[0]["content"] == f"{SUMMARY_MARKER}\nsummary"
     assert conversation[1]["role"] == "user"
     assert "s" * 900 in agent.provider.chat.call_args[0][0][1]["content"]  # earlier summary carried over whole
 
