@@ -7,11 +7,11 @@
 
 A small AI agent you can read in an afternoon. It runs shell commands, edits files, searches the web and remembers things, using a small model on your own machine or any OpenAI-compatible API.
 
-- **Small:** about 3,500 lines of Python, with only `httpx`, `click` and `rich` as dependencies.
+- **Small:** about 3,100 lines of Python, with only `httpx`, `click` and `rich` as dependencies.
 - **Built for small models:** tuned on 4B and 9B models with a [task-eval harness](evals/). On qwen3.5:4b, the pass rate went from 88% to 97% with about a quarter fewer tool calls.
 - **Local-first:** uses Ollama by default. OpenAI, LM Studio, vLLM and llama.cpp work too.
-- **Safe by default:** a workspace sandbox, optional approval before commands and edits, and `/undo` for file changes.
-- **Extras:** image input, persistent memory, custom tools as plugins, and a Telegram bot.
+- **Guard rails:** a workspace sandbox by default, approval before commands and edits (`agent-mini init` turns it on), and `/undo` for file changes.
+- **Extras:** persistent memory, saved sessions, and custom tools as plugins.
 
 ## Quick start
 
@@ -36,9 +36,12 @@ Settings live in `~/.agent-mini/config.json`. Everything has a default, so only 
 ```json
 {
   "provider": "ollama",
-  "providers": { "ollama": { "model": "qwen3.5:9b" } }
+  "providers": { "ollama": { "model": "qwen3.5:9b" } },
+  "tools": { "confirm": ["shell", "write_file", "edit_file"] }
 }
 ```
+
+Leave out `tools.confirm` and the agent runs commands and edits files without asking (see [Safety](#safety)).
 
 | Provider | Use it for |
 |---|---|
@@ -76,13 +79,15 @@ async def handler(arguments: dict) -> str:
     return datetime.now(timezone.utc).isoformat()
 ```
 
+In the `readonly` sandbox, a plugin is loaded only if its `TOOL_DEF` has `"x-readonly": true`.
+
 ## Chat commands
 
 | Command | What it does |
 |---|---|
 | `/undo` | Reverts the agent's last file change |
 | `/clear` | Starts a new conversation |
-| `/model <name>` | Switches the model |
+| `/model <name>` | Switches the model and saves it to the config |
 | `/sessions`, `/load <id>` | Lists saved sessions and resumes one |
 | `/help` | Shows all commands |
 
@@ -94,30 +99,10 @@ Ctrl+C stops the current turn. For multi-line input, wrap the text in `"""`.
   - `workspace` (the default) keeps every path inside the workspace.
   - `readonly` does the same and also removes the shell and file-writing tools.
   - `unrestricted` allows any path.
-- **Approval:** tools listed in `tools.confirm` ask before they run. `agent-mini init` turns this on for `shell`, `write_file` and `edit_file`. Pass `--yes` to approve everything.
+- **Approval:** tools listed in `tools.confirm` ask before they run. The list is empty unless you fill it; `agent-mini init` puts `shell`, `write_file` and `edit_file` in it. Pass `--yes` to approve everything.
 - **Guards:** dangerous commands like `rm -rf` and `sudo` are blocked. The shell doesn't get environment variables that look like secrets, and `web_fetch` refuses private addresses.
 
 The guards reduce risk, but they aren't a security boundary. Approval is the real control.
-
-## Telegram
-
-Run the same agent from your phone:
-
-1. Create a bot with [@BotFather](https://t.me/BotFather) and get your numeric ID from [@userinfobot](https://t.me/userinfobot).
-2. Run `pip install "agent-mini[telegram]"`.
-3. Add the bot to your config:
-
-   ```json
-   {
-     "channels": {
-       "telegram": { "enabled": true, "token": "123:ABC…", "allowFrom": ["YOUR_NUMERIC_ID"] }
-     }
-   }
-   ```
-
-4. Run `agent-mini gateway`.
-
-If `allowFrom` is empty, anyone can use the bot. In that case it runs read-only unless you set `allowShell` to `true`.
 
 ## Learn how it works
 

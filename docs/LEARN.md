@@ -87,7 +87,6 @@ The minimal agent works on a strong model and an easy task. Point it at a small 
 | Tool results are cut at 4,000 characters | A model can't tell what was cut or how to get the rest | `clip()` keeps head and tail and suggests `offset`/`limit` or `grep` |
 | The model repeats the same call until `MAX_STEPS` | Small models get stuck | `_is_looping()` in loop.py: one nudge, then a forced answer |
 | Hitting `MAX_STEPS` returns "Stopped" | You get nothing for all that work | `_final_answer()`: one last call without tools, asking for a summary |
-| The model writes `<tool_call>{…}</tool_call>` as text | It is shown to you as the answer | `parse_text_tool_calls()` in [providers/parsing.py](../src/agent_mini/providers/parsing.py) |
 | The model sends `file_path` instead of `path` | `TypeError`, and the model is confused | [forgiving.py](../src/agent_mini/forgiving.py) maps common names |
 | `read_file("/etc/passwd")` just works | The agent can read anything you can | [sandbox.py](../src/agent_mini/sandbox.py): paths stay in the workspace |
 | You approve every shell command or none | Approving everything gets tedious; approving nothing is risky | `tools.confirm` per tool, a blocklist, secrets kept out of the shell's environment |
@@ -121,15 +120,15 @@ Read the files in this order. The line counts are approximate.
 | # | File | Lines | Read it for | Skip at first |
 |---|---|---|---|---|
 | 1 | [providers/base.py](../src/agent_mini/providers/base.py) | 110 | `ToolCall`, `ChatResponse` and `Provider.chat()`: the types everything else uses | `raise_for_status` |
-| 2 | [loop.py](../src/agent_mini/loop.py) | 380 | `run()`: its numbered steps 1–4 are the minimal agent's loop | how `_call()` retries |
-| 3 | [prompt.py](../src/agent_mini/prompt.py) | 190 | The tier table and the system prompt's rules | the model-name regexes |
+| 2 | [loop.py](../src/agent_mini/loop.py) | 360 | `run()`: its numbered steps 1–4 are the minimal agent's loop | how `_call()` retries |
+| 3 | [prompt.py](../src/agent_mini/prompt.py) | 180 | The tier table and the system prompt's rules | the model-name regexes |
 | 4 | [tools.py](../src/agent_mini/tools.py) | 470 | `@tool` and `_schema()` (compare with the minimal agent's `schema()`), then the steps of `execute()`, then `read_file`, `write_file`, `shell` | `list_files`, `search_files` |
 | 5 | [context.py](../src/agent_mini/context.py) | 110 | `clip`, `prune`, `summarize_history` | |
 | 6 | [sandbox.py](../src/agent_mini/sandbox.py) | 130 | Paths, the command blocklist, killing a process group | the `rm -rf` regex |
-| 7 | [providers/parsing.py](../src/agent_mini/providers/parsing.py), [forgiving.py](../src/agent_mini/forgiving.py), [editing.py](../src/agent_mini/editing.py) | 350 | The small-model fixes, once you know what they fix | |
-| 8 | [providers/ollama.py](../src/agent_mini/providers/ollama.py), [providers/openai.py](../src/agent_mini/providers/openai.py) | 250 | Two wire formats, and streaming | |
+| 7 | [providers/parsing.py](../src/agent_mini/providers/parsing.py), [forgiving.py](../src/agent_mini/forgiving.py), [editing.py](../src/agent_mini/editing.py) | 310 | The small-model fixes, once you know what they fix | |
+| 8 | [providers/ollama.py](../src/agent_mini/providers/ollama.py), [providers/openai.py](../src/agent_mini/providers/openai.py) | 240 | Two wire formats, and streaming | |
 
-Leave these for later: [cli.py](../src/agent_mini/cli.py) is 730 lines, mostly terminal UI. [telegram.py](../src/agent_mini/telegram.py) is the phone gateway, [web.py](../src/agent_mini/web.py) mostly parses HTML, and [config.py](../src/agent_mini/config.py) holds settings and defaults.
+Leave these for later: [cli.py](../src/agent_mini/cli.py) is about 670 lines, mostly terminal UI. [web.py](../src/agent_mini/web.py) mostly parses HTML, and [config.py](../src/agent_mini/config.py) holds settings and defaults.
 
 Questions to answer as you read:
 
@@ -181,7 +180,7 @@ Run `uv run pytest` after each change to the real agent.
 
 ### With the real agent
 
-4. **Write a plugin.** Make a `word_count(path)` tool as a plugin (see *Plugins* in the [README](../README.md)), then check `/tools` in `agent-mini chat`.
+4. **Write a plugin.** Make a `word_count(path)` tool as a plugin (the plugin example is under *Tools* in the [README](../README.md#tools)), then check `/tools` in `agent-mini chat`.
 5. **Add a built-in tool.** Add `file_info(path)`, returning size and modification time, as a `@tool` method in tools.py, with a test in `tests/test_tools.py`. Every tool's schema is sent with every request: how many tokens did yours add? (`/status` shows usage.)
 6. **Catch longer loops.** `_is_looping()` in loop.py catches `A A A A` and `A B A B`. Make it catch `A B C A B C` too. Write the test in `tests/test_loop.py` first. Why does it compare results as well as calls? Think of a task that rightly makes the same call twice.
 7. **Tighten the budget.** Set `"agent": {"contextWindow": 2000}` in `~/.agent-mini/config.json`, then give the agent a task that reads several files, with `--report`. Search the report for `[cleared to save context`: which results went, and did the model cope? Remove the setting afterwards.

@@ -40,15 +40,5 @@
     "enabled": true,
     "maxEntries": 1000
   },
-  "channels": {
-    "telegram": {
-      "enabled": false,
-      "token": "",
-      "allowFrom": [],
-      "allowShell": false,
-      "sharedMemory": false,
-      "streamResponses": true
-    }
-  },
   "workspace": "~/.agent-mini/workspace"
 }

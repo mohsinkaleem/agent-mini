@@ -261,12 +261,12 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
 
   <main>
     <section class="hero" id="top">
-      <span class="eyebrow">docs · version 0.5.0</span>
+      <span class="eyebrow">docs · version 0.7.0</span>
       <h1>How <em>Agent Mini</em> works</h1>
       <p class="lede">Agent Mini is a small AI helper that runs on your own computer. You type a request. A language model decides what to do. Agent Mini runs the tools the model asks for (the shell, files, the web, memory) and shows the model the results, again and again, until the model has an answer for you.</p>
       <p class="muted">This page explains the design in plain words. The diagrams and tools on the page are interactive: click, step and type to see what happens inside.</p>
       <div class="facts">
-        <div class="fact"><b>~3,500</b><span>lines of Python</span></div>
+        <div class="fact"><b>~3,100</b><span>lines of Python</span></div>
         <div class="fact"><b>3</b><span>libraries: httpx, click, rich</span></div>
         <div class="fact"><b>10</b><span>built-in tools, plus your plugins</span></div>
         <div class="fact"><b>5</b><span>model tiers, tiny to cloud</span></div>
@@ -283,7 +283,7 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
       <ol class="cycle">
         <li><b>Send</b><span>System prompt, chat history and your new message go to the model, with the list of tools.</span></li>
         <li><b>Model decides</b><span>It replies with text, or asks for one or more tool calls.</span></li>
-        <li><b>Run tools</b><span>Each call is checked, fixed up if needed, and run. Several calls run at the same time.</span></li>
+        <li><b>Run tools</b><span>Each call is checked, fixed up if needed, and run, one after another in order.</span></li>
         <li><b>Feed back</b><span>Results are added to the conversation. Back to step 1.</span></li>
       </ol>
       <p class="cycle-note">
@@ -303,11 +303,9 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
               <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrow" d="M0 0L10 5L0 10z"/></marker>
             </defs>
             <!-- edges -->
-            <path class="edge" d="M180 57 C232 57 228 178 280 178" marker-end="url(#ah)"/>
-            <path class="edge" d="M180 137 C228 137 230 194 280 194" marker-end="url(#ah)"/>
-            <path class="edge" d="M280 212 C230 212 230 227 180 227" marker-end="url(#ah)"/>
-            <path class="edge dash" d="M20 70 H8 V317 H20" marker-end="url(#ah)"/>
-            <text class="elabel" x="12" y="282" transform="rotate(-90 12 282)">saves each turn</text>
+            <path class="edge" d="M180 177 H280" marker-end="url(#ah)"/>
+            <path class="edge dash" d="M20 190 H8 V317 H20" marker-end="url(#ah)"/>
+            <text class="elabel" x="12" y="300" transform="rotate(-90 12 300)">saves each turn</text>
             <path class="edge" d="M380 150 V84" marker-end="url(#ah)"/>
             <path class="edge" d="M380 240 V290" marker-end="url(#ah)"/>
             <path class="edge" d="M380 344 V380" marker-end="url(#ah)"/>
@@ -317,9 +315,7 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
             <path class="edge" d="M480 317 H590" marker-end="url(#ah)"/>
             <path class="edge" d="M480 334 C535 334 535 407 590 407" marker-end="url(#ah)"/>
             <!-- nodes -->
-            <g class="node" data-id="cli" tabindex="0" role="button" aria-label="cli.py"><rect x="20" y="30" width="160" height="54" rx="8"/><text class="t" x="34" y="53">You, in a terminal</text><text class="f" x="34" y="71">cli.py</text></g>
-            <g class="node" data-id="telegram" tabindex="0" role="button" aria-label="telegram.py"><rect x="20" y="110" width="160" height="54" rx="8"/><text class="t" x="34" y="133">You, on a phone</text><text class="f" x="34" y="151">telegram.py</text></g>
-            <g class="node" data-id="vision" tabindex="0" role="button" aria-label="vision.py"><rect x="20" y="200" width="160" height="54" rx="8"/><text class="t" x="34" y="223">Images</text><text class="f" x="34" y="241">vision.py</text></g>
+            <g class="node" data-id="cli" tabindex="0" role="button" aria-label="cli.py"><rect x="20" y="150" width="160" height="54" rx="8"/><text class="t" x="34" y="173">You, in a terminal</text><text class="f" x="34" y="191">cli.py</text></g>
             <g class="node" data-id="sessions" tabindex="0" role="button" aria-label="sessions.py"><rect x="20" y="290" width="160" height="54" rx="8"/><text class="t" x="34" y="313">Saved chats</text><text class="f" x="34" y="331">sessions.py</text></g>
             <g class="node" data-id="config" tabindex="0" role="button" aria-label="config.py"><rect x="20" y="380" width="160" height="54" rx="8"/><text class="t" x="34" y="403">Settings</text><text class="f" x="34" y="421">config.py</text></g>
             <g class="node" data-id="prompt" tabindex="0" role="button" aria-label="prompt.py"><rect x="280" y="30" width="200" height="54" rx="8"/><text class="t" x="294" y="53">Tiers and system prompt</text><text class="f" x="294" y="71">prompt.py</text></g>
@@ -459,7 +455,7 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
       <div class="prose"><p>No single check is perfect, so there are several. The most important one is approval: you see each command or file change before it happens.</p></div>
       <div class="layers">
         <div class="layer"><b>Sandbox</b><span><code>workspace</code> (the default) keeps file paths inside the workspace folder. <code>readonly</code> also removes the shell, write and edit tools. <code>unrestricted</code> allows any path. A typo in this setting stops the agent from starting.</span></div>
-        <div class="layer"><b>Approval</b><span>Tools listed in <code>tools.confirm</code> ask first: <kbd>[y]es / [N]o / [a]lways / [d]iff</kbd>. With no one to ask (a script, or Telegram), they are refused.</span></div>
+        <div class="layer"><b>Approval</b><span>Tools listed in <code>tools.confirm</code> ask first: <kbd>[y]es / [N]o / [a]lways / [d]iff</kbd>. With no one to ask (a script), they are refused.</span></div>
         <div class="layer"><b>Blocked commands</b><span><code>rm -rf</code> in any flag order, <code>sudo</code>, <code>mkfs</code>, <code>dd if=</code>, a fork bomb. This slows mistakes down; it is not a wall.</span></div>
         <div class="layer"><b>Hidden secrets</b><span>Environment variables with KEY, TOKEN, SECRET, PASSWORD or CREDENTIAL in the name are not passed to the shell.</span></div>
         <div class="layer"><b>Web guard</b><span><code>web_fetch</code> refuses localhost, private network and cloud metadata addresses, checks every redirect and stops at 2 MB.</span></div>
@@ -481,7 +477,7 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
 ├── <span class="d">plugins/</span>         <span class="c"># your own tools: a .py file with TOOL_DEF and handler</span>
 └── <span class="d">workspace/</span>       <span class="c"># the default folder the agent works in</span></pre>
       </div>
-      <div class="prose"><p>In a project folder, an <code>AGENTS.md</code> or <code>.agent-mini.md</code> file is added to the system prompt. Use it for build commands, code style and things to avoid.</p></div>
+      <div class="prose"><p>In a project folder, an <code>AGENTS.md</code> file is added to the system prompt. Use it for build commands, code style and things to avoid.</p></div>
     </section>
 
     <section id="words">
@@ -512,15 +508,15 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
 
   /* ── Architecture ───────────────────────────────────────── */
   const PARTS = {
-    loop: { title: "The agent loop", file: "loop.py", lines: 375, body: "The heart of the program. AgentLoop.run() takes your message and keeps going until there is an answer.",
-      points: ["Builds the message list: system prompt, history, your message (with any images).", "Calls the model, and retries up to 3 times on network errors or busy servers.", "Runs all tool calls from one reply at the same time, and clips long results.", "Spots loops (the same calls over and over) and nudges the model, then forces an answer.", "Trims the context before each call and summarizes old history after a reply (context.py)."] },
-    prompt: { title: "Tiers and system prompt", file: "prompt.py", lines: 190, body: "Decides how big the model is and writes the instructions it starts with.",
+    loop: { title: "The agent loop", file: "loop.py", lines: 358, body: "The heart of the program. AgentLoop.run() takes your message and keeps going until there is an answer.",
+      points: ["Builds the message list: system prompt, history, your message.", "Calls the model, and retries up to 3 times on network errors or busy servers.", "Runs the tool calls from one reply in order, one at a time, and clips long results.", "Spots loops (the same calls over and over) and nudges the model, then forces an answer.", "Trims the context before each call and summarizes old history after a reply (context.py)."] },
+    prompt: { title: "Tiers and system prompt", file: "prompt.py", lines: 179, body: "Decides how big the model is and writes the instructions it starts with.",
       points: ["Guesses the tier from the name (\"9b\" → small) or the size the server reports.", "Each tier sets a context budget, a round limit, a tool output limit and how many memories to show.", "The system prompt is short: about 240 tokens of rules, plus the workspace path, the OS and the date.", "Adds AGENTS.md from the workspace, then recent memories last."] },
-    providers: { title: "Model adapters", file: "providers/ (base.py, parsing.py, ollama.py, openai.py)", lines: 540, body: "Speak each server's API, so the loop only sees one simple chat() call.",
-      points: ["Ollama: native /api/chat with streaming, num_ctx, think and keep_alive.", "OpenAI and any OpenAI-compatible server (the \"local\" provider).", "Recovers tool calls written as text: <tool_call> tags, [TOOL_CALLS], fenced JSON.", "Repairs broken JSON in arguments (trailing commas, missing braces)."] },
+    providers: { title: "Model adapters", file: "providers/ (base.py, parsing.py, ollama.py, openai.py)", lines: 457, body: "Speak each server's API, so the loop only sees one simple chat() call.",
+      points: ["Ollama: native /api/chat with streaming, num_ctx, think and keep_alive.", "OpenAI and any OpenAI-compatible server (the \"local\" provider).", "Repairs broken JSON in arguments (trailing commas, missing braces)."] },
     model: { title: "The model", file: "outside the program", body: "A language model on a server. Ollama on your machine is the default; any OpenAI-compatible API works too.",
       points: ["Tuned and measured on 4B and 9B models such as qwen3.5.", "It only ever writes text or tool calls. It never touches your computer directly.", "Talked to over HTTP."] },
-    tools: { title: "Tools, sandbox, undo", file: "tools.py, sandbox.py, editing.py, forgiving.py", lines: 787, body: "The list of things the model can do, and the checks around them.",
+    tools: { title: "Tools, sandbox, undo", file: "tools.py, sandbox.py, editing.py, forgiving.py", lines: 820, body: "The list of things the model can do, and the checks around them.",
       points: ["shell, read_file, write_file, edit_file, list_files, search_files, web_search, web_fetch, remember, recall.", "Accepts the names small models use: bash → shell, file_path → path, old_string → old_text.", "Keeps paths inside the workspace, asks for approval, blocks dangerous commands.", "Saves the old file before every write, for /undo.", "Loads plugins from ~/.agent-mini/plugins/."] },
     workspace: { title: "Your files and shell", file: "~/.agent-mini/workspace by default", body: "The folder the agent works in. Change it with --workspace or the workspace setting.",
       points: ["Shell commands run with this folder as the current directory.", "In the default sandbox, file tools cannot reach outside it.", "Commands time out after 120 seconds (tools.shellTimeout)."] },
@@ -528,15 +524,11 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
       points: ["web_search uses DuckDuckGo. No API key is needed.", "web_fetch turns a page into plain text.", "Refuses private and local addresses, checks each redirect, stops at 2 MB.", "Wraps all web text in <untrusted_content> tags."] },
     memory: { title: "Long-term memory", file: "memory.py", lines: 79, body: "Facts that last between chats, kept in memory.json.",
       points: ["remember(key, value) saves a fact. The same key updates it.", "recall(query) finds facts by simple keyword matching.", "The newest few facts go at the end of the system prompt (none for tiny models).", "Turn it off with memory.enabled: false."] },
-    cli: { title: "Command line", file: "cli.py", lines: 730, body: "Everything you type: agent-mini init, chat, doctor and gateway.",
+    cli: { title: "Command line", file: "cli.py", lines: 672, body: "Everything you type: agent-mini init, chat and doctor.",
       points: ["init asks a few questions and writes your config.", "doctor checks the provider, the model, tool support and permissions.", "chat is the interactive prompt, with /undo, /model, /memory, /sessions and more.", "chat -m \"…\" runs one message for scripts, with exit codes and a JSON --report.", "Shows the approval prompt and renders streamed replies."] },
-    telegram: { title: "Telegram gateway", file: "telegram.py", lines: 151, body: "The same agent, reached from a Telegram bot.",
-      points: ["Each user has their own conversation; their messages run one at a time.", "A public bot runs read-only unless allowShell is set.", "With more than one user, memory is off unless sharedMemory is set.", "Tools that need approval are refused, since no one can approve them."] },
-    vision: { title: "Images", file: "vision.py", lines: 46, body: "Put an image path or URL in your message and the model can see it (if it supports images).",
-      points: ["Finds image paths and URLs in the message.", "Turns them into image parts of the message.", "Local paths are ignored when the message comes from Telegram."] },
     sessions: { title: "Saved chats", file: "sessions.py", lines: 99, body: "Each chat is saved as a JSON file after every turn, so you can come back to it.",
-      points: ["/sessions lists them, /load <id> or chat -s <id> resumes one.", "Files are owner-only (0600).", "Telegram chats are kept in memory only."] },
-    config: { title: "Settings", file: "config.py", lines: 108, body: "One DEFAULTS table holds every setting. Your config.json only needs what you change.",
+      points: ["/sessions lists them, /load <id> or chat -s <id> resumes one.", "Files are owner-only (0600)."] },
+    config: { title: "Settings", file: "config.py", lines: 102, body: "One DEFAULTS table holds every setting. Your config.json only needs what you change.",
       points: ["Your file is merged over the defaults and checked.", "An unknown provider, sandbox level or tier is an error, so a typo can never mean \"no sandbox\".", "Writes files atomically with owner-only permissions."] },
   };
   const detail = $("#detail");
@@ -560,7 +552,6 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
   const M = {
     sys: { role: "system", text: SYS },
     user: { role: "user", text: "Add \"buy milk\" to todo.txt" },
-    call1: { role: "assistant", text: "<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"file_path\": \"/todo.txt\"}}\n</tool_call>" },
     call1fixed: { role: "assistant · tool call", text: "read_file({\"file_path\": \"/todo.txt\"})" },
     res1: { role: "tool · read_file", text: "eggs\nbread" },
     call2: { role: "assistant · tool call", text: "write_file({\"path\": \"todo.txt\",\n  \"content\": \"eggs\\nbread\\nbuy milk\\n\"})" },
@@ -572,11 +563,9 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
       body: ["You run <code>agent-mini chat</code> and type: <i>Add \"buy milk\" to todo.txt</i>.", "The CLI hands the message and the chat history (empty so far) to <code>AgentLoop.run()</code>."] },
     { title: "Build the system prompt", where: "prompt.py · build_system_prompt()", actors: ["loop.py", "prompt.py"], msgs: ["sys", "user"], fresh: ["sys"],
       body: ["Ollama reports about 4 billion parameters for <code>qwen3.5:4b</code>, so this is the <b>small</b> tier: a 6,000 token budget and up to 15 rounds.", "The system prompt lists what the agent can do, the workspace, the OS (so it uses macOS shell commands) and today's date. Any <code>AGENTS.md</code> and recent memories go at the end."] },
-    { title: "Ask the model", where: "providers/ollama.py · chat()", actors: ["loop.py", "providers/", "model"], msgs: ["sys", "user"], fresh: [],
-      body: ["The messages go to Ollama with the schemas of all 10 tools (about 900 tokens) and <code>num_ctx</code> set to fit.", "The reply streams back. Here the model wants to look at the file first."] },
-    { title: "The model writes the call as text", where: "providers/parsing.py · parse_text_tool_calls()", actors: ["loop.py", "providers/"], msgs: ["sys", "user", "call1"], fresh: ["call1"],
-      body: ["Small models sometimes write a tool call inside their text instead of sending a real one. A strict agent would show this to you as the answer, and the task would end.", "Agent Mini finds the <code>&lt;tool_call&gt;</code> tags, reads the JSON inside, and treats it as a real call."] },
-    { title: "Fix up the call", where: "tools.py · execute()  ·  forgiving.py, sandbox.py", actors: ["tools.py"], msgs: ["sys", "user", "call1fixed"], fresh: ["call1fixed"],
+    { title: "Ask the model", where: "providers/ollama.py · chat()", actors: ["loop.py", "providers/", "model"], msgs: ["sys", "user", "call1fixed"], fresh: ["call1fixed"],
+      body: ["The messages go to Ollama with the schemas of all 10 tools (about 900 tokens) and <code>num_ctx</code> set to fit.", "The reply streams back. Here the model wants to look at the file first, so it sends a <code>read_file</code> tool call. A small model often guesses the argument names and the path, as this one did."] },
+    { title: "Fix up the call", where: "tools.py · execute()  ·  forgiving.py, sandbox.py", actors: ["tools.py"], msgs: ["sys", "user", "call1fixed"], fresh: [],
       body: ["The model used <code>file_path</code>, but the tool's argument is <code>path</code>. The checker maps it.", "The path <code>/todo.txt</code> would be outside the workspace. But there is no <code>/todo.txt</code> on the real disk, so the model clearly meant the workspace file. The agent reads <code>workspace/todo.txt</code> instead of failing."] },
     { title: "Run the tool and feed back the result", where: "loop.py · _run_tools()  ·  context.py · clip()", actors: ["loop.py", "tools.py"], msgs: ["sys", "user", "call1fixed", "res1"], fresh: ["res1"],
       body: ["The file is read and marked as seen in this session. The result is added to the conversation, cut down if it is longer than the tier allows (4,000 characters for small).", "Round 1 is done. The loop goes back and asks the model again."] },
@@ -652,7 +641,6 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
   const PRESETS = [
     { label: "bash + cmd", text: '{"name": "bash", "arguments": {"cmd": "ls -la src"}}' },
     { label: "path like /notes.txt", text: '{"name": "read_file", "arguments": {"file_path": "/workspace/notes.txt", "limit": "20"}}' },
-    { label: "written as text", text: 'Let me check the file.\n<tool_call>\n{"name": "read_file", "arguments": {"path": "todo.txt"}}\n</tool_call>' },
     { label: "rm -rf", text: '{"name": "shell", "arguments": {"command": "rm -fr build/"}}' },
     { label: "overwrite unread file", text: '{"name": "write_file", "arguments": {"path": "todo.txt", "content": "buy milk"}}' },
     { label: "outside workspace", text: '{"name": "read_file", "arguments": {"path": "/etc/passwd"}}' },
@@ -719,12 +707,10 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
     let src = input.value.trim();
 
     // 1. read the call
-    let jsonText = src, note = "Native tool call JSON.";
-    const tag = src.match(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/) || src.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (tag) { jsonText = tag[1]; note = "Found a tool call written inside the text. It is used as a real call."; }
-    let obj = null, kind = tag ? "fix" : "ok";
-    try { obj = JSON.parse(jsonText); } catch (e) {
-      try { obj = JSON.parse(repairJson(jsonText)); kind = "fix"; note = "The JSON was broken (a trailing comma or missing brace). It was repaired."; }
+    let note = "Native tool call JSON.";
+    let obj = null, kind = "ok";
+    try { obj = JSON.parse(src); } catch (e) {
+      try { obj = JSON.parse(repairJson(src)); kind = "fix"; note = "The JSON was broken (a trailing comma or missing brace). It was repaired."; }
       catch (e2) { obj = null; }
     }
     if (!obj || typeof obj !== "object" || typeof obj.name !== "string") {

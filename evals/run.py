@@ -321,7 +321,6 @@ def _metrics(reports: list[dict]) -> dict:
         "tool_calls": len(calls),
         "tool_errors": sum(1 for c in calls if c.get("error")),
         "tools": [c["name"] for c in calls],
-        "text_tool_calls": sum(r.get("text_tool_calls", 0) for r in reports),
         "loop_nudges": sum(r.get("loop_nudges", 0) for r in reports),
         "prompt_tokens": sum(u.get("prompt_tokens", 0) for u in usage),
         "completion_tokens": sum(u.get("completion_tokens", 0) for u in usage),

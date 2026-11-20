@@ -122,11 +122,7 @@ async def _take(delta: str | None, parts: list[str], callback: StreamCallback | 
 
 
 def to_ollama(messages: list[dict]) -> list[dict]:
-    """OpenAI-style messages in Ollama's shape.
-
-    Tool calls carry object arguments, tool results name their tool, and
-    image_url content parts become the flat ``images: [<base64 or URL>]`` field.
-    """
+    """OpenAI-style messages in Ollama's shape: tool calls carry object arguments, tool results name their tool."""
     out = []
     for msg in messages:
         if msg["role"] == "tool":
@@ -141,13 +137,5 @@ def to_ollama(messages: list[dict]) -> list[dict]:
                 base["tool_calls"].append(
                     {"function": {"name": func.get("name", ""), "arguments": {} if INVALID_ARGS_KEY in args else args}}
                 )
-        if isinstance(base.get("content"), list):
-            parts = base["content"]
-            base["content"] = "\n".join(p.get("text", "") for p in parts if p.get("type") == "text" and p.get("text"))
-            images = [(p.get("image_url") or {}).get("url", "") for p in parts if p.get("type") == "image_url"]
-            # Strip the data: prefix so older builds that want raw base64 work too.
-            images = [u.split(";base64,", 1)[1] if u.startswith("data:") and ";base64," in u else u for u in images]
-            if images := [u for u in images if u]:
-                base["images"] = images
         out.append(base)
     return out

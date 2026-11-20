@@ -1,4 +1,4 @@
-"""Providers: wire formats, streaming, errors, and tool calls written as text."""
+"""Providers: wire formats, streaming and errors."""
 
 import json
 from unittest.mock import AsyncMock
@@ -10,7 +10,6 @@ from agent_mini.config import with_defaults
 from agent_mini.providers import OllamaProvider, OpenAIProvider, create_provider
 from agent_mini.providers.base import ModelInfo
 from agent_mini.providers.ollama import to_ollama
-from agent_mini.providers.parsing import parse_text_tool_calls
 
 
 def _mock(provider, handler):
@@ -28,20 +27,14 @@ def _ndjson(*chunks) -> str:
 def test_to_ollama_messages():
     out = to_ollama([
         {"role": "user", "content": "hi"},
-        {"role": "user", "content": [
-            {"type": "text", "text": "compare"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
-            {"type": "image_url", "image_url": {"url": "https://x.org/b.png"}},
-        ]},
         {"role": "assistant", "content": "", "tool_calls": [
             {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": '{"path": "a.py"}'}},
         ]},
         {"role": "tool", "tool_call_id": "c1", "name": "read_file", "content": "ok"},
     ])
     assert out[0] == {"role": "user", "content": "hi"}
-    assert out[1] == {"role": "user", "content": "compare", "images": ["AAA", "https://x.org/b.png"]}
-    assert out[2]["tool_calls"] == [{"function": {"name": "read_file", "arguments": {"path": "a.py"}}}]
-    assert out[3] == {"role": "tool", "content": "ok", "tool_name": "read_file"}
+    assert out[1]["tool_calls"] == [{"function": {"name": "read_file", "arguments": {"path": "a.py"}}}]
+    assert out[2] == {"role": "tool", "content": "ok", "tool_name": "read_file"}
 
 
 def test_ollama_payload():
@@ -165,34 +158,3 @@ def test_create_provider(monkeypatch):
     assert create_provider(with_defaults({"provider": "local"})).headers["Authorization"] == "Bearer am-env"
     ollama = create_provider(with_defaults({}))
     assert ollama.name == "ollama" and ollama.model == "qwen3.5:9b"
-
-
-# ── Tool calls written as text ───────────────────────────────────────
-
-_KNOWN = {"read_file", "shell"}
-
-
-@pytest.mark.parametrize("content", [
-    '<tool_call>\n{"name": "read_file", "arguments": {"path": "a.py"}}\n</tool_call>',
-    '[TOOL_CALLS] [{"name": "read_file", "arguments": {"path": "a.py"}}]',
-    'Let me look.\n```json\n{"name": "read_file", "arguments": {"path": "a.py"}}\n```',
-    '{"name": "read_file", "parameters": {"path": "a.py"}}',
-    '<|python_tag|>{"name": "read_file", "arguments": "{\\"path\\": \\"a.py\\"}"}',
-])
-def test_parse_text_tool_calls_formats(content):
-    calls, _ = parse_text_tool_calls(content, _KNOWN)
-    assert [(c.name, c.arguments) for c in calls] == [("read_file", {"path": "a.py"})]
-
-
-def test_parse_text_tool_calls_ignores_unknown_tools_and_examples():
-    assert parse_text_tool_calls('{"name": "rm_everything", "arguments": {}}', _KNOWN)[0] == []
-    essay = "Here is how tool calls look:\n" + "x" * 400 + \
-        '\n```json\n{"name": "read_file", "arguments": {"path": "a.py"}}\n```'
-    assert parse_text_tool_calls(essay, _KNOWN)[0] == []
-    assert parse_text_tool_calls("I used read_file earlier.", _KNOWN) == ([], "I used read_file earlier.")
-
-
-def test_parse_text_tool_calls_returns_remaining_text():
-    calls, rest = parse_text_tool_calls(
-        'Checking.\n<tool_call>{"name": "shell", "arguments": {"command": "ls"}}</tool_call>', _KNOWN)
-    assert calls[0].name == "shell" and rest == "Checking."

@@ -21,7 +21,7 @@ uv run ruff check src/ tests/ evals/ examples/
 
 ## Project Principles
 
-- **Stay lean.** The core is about 3,500 lines. Don't add frameworks, heavy abstractions, or dependencies unless absolutely necessary.
+- **Stay lean.** The core is about 3,100 lines. Don't add frameworks, heavy abstractions, or dependencies unless absolutely necessary.
 - **Zero-framework.** Pure `httpx` + `asyncio`. No LangChain, no LiteLLM, no abstractions-on-abstractions.
 - **Flat and obvious.** One module per job, no subpackages beyond `providers/`.
 - **Measure small-model changes.** A change to the prompt, the tools or the loop needs an eval comparison (`python evals/run.py --repeat 3`, before and after, `--compare` the two reports) on at least one small model.
@@ -76,7 +76,7 @@ Open an issue with:
 
 ```
 src/agent_mini/
-├── cli.py          # init, chat, doctor, gateway
+├── cli.py          # init, chat, doctor
 ├── config.py       # defaults (the one source of truth), validation, files
 ├── loop.py         # the ReAct loop
 ├── context.py      # context budget: clip, prune, summarize
@@ -87,12 +87,10 @@ src/agent_mini/
 ├── forgiving.py    # tool and argument aliases for small models
 ├── web.py          # web_search, web_fetch, SSRF guard
 ├── memory.py       # persistent memory
-├── vision.py       # images in messages
 ├── sessions.py     # saved conversations
-├── telegram.py     # Telegram gateway
 └── providers/
     ├── base.py     # types and the Provider interface
-    ├── parsing.py  # tool-call parsing, JSON repair, calls written as text
+    ├── parsing.py  # tool-call parsing, JSON repair
     ├── ollama.py   # Ollama native API
     └── openai.py   # OpenAI and any OpenAI-compatible server
 examples/           # minimal_agent.py: the teaching example (tests/test_example.py runs it)

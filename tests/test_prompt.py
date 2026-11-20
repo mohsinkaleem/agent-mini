@@ -58,9 +58,8 @@ def test_token_estimates():
     messages = [
         {"role": "user", "content": "x" * 40},
         {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "f", "arguments": "y" * 39}}]},
-        {"role": "user", "content": [{"type": "text", "text": "z" * 40}, {"type": "image_url"}]},
     ]
-    assert estimate_messages_tokens(messages) == (4 + 10) + (4 + 1 + 10) + (4 + 10 + 85)
+    assert estimate_messages_tokens(messages) == (4 + 10) + (4 + 1 + 10)
 
 
 def test_num_ctx_covers_budget_and_tool_schemas():
@@ -91,11 +90,10 @@ def test_custom_prompt_is_appended_verbatim(workspace: Path):
 
 
 def test_project_instructions(workspace: Path):
-    (workspace / "AGENTS.md").write_text("generic")
-    assert '<project_instructions source="AGENTS.md">\ngeneric' in _prompt(workspace)
-    (workspace / ".agent-mini.md").write_text("specific " + "x" * 5000)
-    prompt = _prompt(workspace, tier="tiny")
-    assert "specific" in prompt and "generic" not in prompt and "… (truncated)" in prompt
+    assert "<project_instructions" not in _prompt(workspace)
+    (workspace / "AGENTS.md").write_text("rules " + "x" * 5000)
+    assert '<project_instructions source="AGENTS.md">\nrules' in _prompt(workspace)
+    assert "… (truncated)" in _prompt(workspace, tier="tiny")
 
 
 def test_memories_come_last(workspace: Path):

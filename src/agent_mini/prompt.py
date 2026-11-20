@@ -22,13 +22,7 @@ def estimate_tokens(text: str) -> int:
 def estimate_messages_tokens(messages: list[dict]) -> int:
     total = 0
     for msg in messages:
-        total += 4  # role and delimiters
-        content = msg.get("content") or ""
-        if isinstance(content, str):
-            total += estimate_tokens(content)
-        else:  # vision: a list of text and image parts
-            for part in content:
-                total += estimate_tokens(part.get("text", "")) if part.get("type") == "text" else 85
+        total += 4 + estimate_tokens(msg.get("content") or "")  # 4: role and delimiters
         for tc in msg.get("tool_calls") or []:
             func = tc.get("function", {})
             args = func.get("arguments", "")
@@ -136,23 +130,18 @@ don't work them out in your head (`python3 -c` works everywhere).
 # assume Linux unless told.
 _SYSTEMS = {"Darwin": "macOS", "Linux": "Linux", "Windows": "Windows"}
 
-# Per-project instructions, looked up in the workspace (first match wins).
-_PROJECT_FILES = (".agent-mini.md", "AGENTS.md")
+# Per-project instructions, read from the workspace.
+_PROJECT_FILE = "AGENTS.md"
 
 
 def _project_instructions(workspace: Path, max_chars: int) -> str:
-    for name in _PROJECT_FILES:
-        path = workspace / name
-        if not path.is_file():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            continue
-        if len(text) > max_chars:
-            text = text[:max_chars] + "\n… (truncated)"
-        return f'\n\n<project_instructions source="{name}">\n{text}\n</project_instructions>' if text else ""
-    return ""
+    try:
+        text = (workspace / _PROJECT_FILE).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:  # no such file, or unreadable
+        return ""
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n… (truncated)"
+    return f'\n\n<project_instructions source="{_PROJECT_FILE}">\n{text}\n</project_instructions>' if text else ""
 
 
 def build_system_prompt(

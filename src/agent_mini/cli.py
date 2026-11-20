@@ -1,4 +1,4 @@
-"""Command line: init, chat, doctor, gateway."""
+"""Command line: init, chat, doctor."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def _setup_logging(verbose: bool = False) -> None:
     )
     logging.getLogger("agent-mini").setLevel(logging.DEBUG if verbose else logging.INFO)
     if not verbose:
-        for name in ("httpx", "httpcore", "asyncio", "telegram"):
+        for name in ("httpx", "httpcore", "asyncio"):
             logging.getLogger(name).setLevel(logging.WARNING)
 
 
@@ -93,8 +93,8 @@ async def _detect_model(agent) -> None:
     """Refine budgets from what the server reports; warn when the model can't call tools."""
     info = await agent.detect_model()
     if info and info.capabilities is not None and "tools" not in info.capabilities:
-        console.print(f"[yellow]⚠ {escape(agent.provider.model)} does not report tool support. Tool calls "
-                      "may fail; agent-mini will try to parse calls written as text.[/yellow]")
+        console.print(f"[yellow]⚠ {escape(agent.provider.model)} does not report tool support, so it can't "
+                      "use tools. Pick a tool-capable model (agent-mini doctor checks).[/yellow]")
 
 
 @click.group()
@@ -442,34 +442,27 @@ def _write_report(path: str, agent, session_id: str, elapsed: float) -> None:
 
 
 def _read_input() -> str:
-    """One line, or several: wrap them in triple quotes, or end lines with a backslash."""
+    """One line, or several: start and end them with three double quotes."""
     first = console.input("[bold blue]You:[/bold blue] ").strip()
-    for delim in ('"""', "'''"):
-        if first.startswith(delim):
-            lines = [first[len(delim):]]
-            while True:
-                try:
-                    line = console.input("[dim]...:[/dim] ")
-                except (EOFError, KeyboardInterrupt):
-                    break
-                if delim in line:
-                    lines.append(line[: line.index(delim)])
-                    break
-                lines.append(line)
-            return "\n".join(lines)
-    text = first
-    while text.endswith("\\"):
+    if not first.startswith('"""'):
+        return first
+    lines = [first[3:]]
+    while True:
         try:
-            text = text[:-1] + "\n" + console.input("[dim]...:[/dim] ")
+            line = console.input("[dim]...:[/dim] ")
         except (EOFError, KeyboardInterrupt):
             break
-    return text
+        if '"""' in line:
+            lines.append(line[: line.index('"""')])
+            break
+        lines.append(line)
+    return "\n".join(lines)
 
 
 _COMMANDS = (
     ("/clear", "Reset the conversation"),
     ("/undo", "Revert the last file change made by the agent"),
-    ("/model <name>", "Switch model, e.g. qwen3.5:9b or ollama/qwen3.5:9b"),
+    ("/model <name>", "Switch model and save it to the config, e.g. qwen3.5:9b or ollama/qwen3.5:9b"),
     ("/tools", "List available tools"),
     ("/memory [query]", "Show or search memories"),
     ("/forget <key>", "Delete a memory"),
@@ -503,8 +496,7 @@ async def _slash(command: str, conversation: list[dict], agent, config: dict) ->
             console.print("[dim]Changes made through the shell can't be undone.[/dim]")
         case "/help":
             _table(_COMMANDS, "Commands")
-            console.print("[dim]Multi-line: start with \"\"\" or ''' and end with the same. "
-                          "Or end a line with \\ to continue it.[/dim]")
+            console.print('[dim]Multi-line: start with """ and end with """.[/dim]')
         case "/tools":
             _table([(d["function"]["name"], d["function"]["description"]) for d in agent.tools.definitions()],
                    "Tools")
@@ -579,47 +571,6 @@ def _render(text: str, plain: bool) -> None:
         reply_console.print(text, markup=False)
 
 
-# ── gateway ──────────────────────────────────────────────────────────
-
-
-@cli.command()
-@click.option("-v", "--verbose", is_flag=True, help="Show debug logs.")
-def gateway(verbose: bool):
-    """Run the Telegram bot."""
-    _setup_logging(verbose)
-    asyncio.run(_gateway(_load()))
-
-
-async def _gateway(config: dict) -> None:
-    from .telegram import TelegramGateway, gateway_config
-
-    tg = config["channels"]["telegram"]
-    token = tg["token"] or os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    if not (tg["enabled"] and token):
-        console.print(f"[red]Telegram is not set up: set channels.telegram.enabled and token in {config_file()} "
-                      "(or TELEGRAM_BOT_TOKEN).[/red]")
-        raise SystemExit(1)
-    config, warnings = gateway_config(config)
-    for warning in warnings:
-        console.print(Panel(escape(warning), border_style="yellow"))
-    agent = _build_agent(config)
-    agent.allow_local_images = False
-    await _detect_model(agent)
-    if agent.tools.confirm:
-        console.print(f"[dim]Nobody can approve tool calls here, so these are denied: "
-                      f"{', '.join(sorted(agent.tools.confirm))} (tools.confirm).[/dim]")
-    bot = TelegramGateway(agent, token, tg["allowFrom"], tg["streamResponses"])
-    await bot.start()
-    console.print("[bold green]Telegram gateway running.[/bold green] [dim]Ctrl+C stops it.[/dim]")
-    try:
-        await asyncio.Event().wait()
-    except (KeyboardInterrupt, asyncio.CancelledError):
-        pass
-    finally:
-        await bot.stop()
-        await agent.close()
-
-
 # ── doctor ───────────────────────────────────────────────────────────
 
 _OK, _WARN, _FAIL = "[green]✓[/green]", "[yellow]![/yellow]", "[red]✗[/red]"
@@ -679,15 +630,6 @@ async def _doctor() -> int:
                                      f"num_ctx {agent.provider.context_window:,} · {agent.max_iterations} iterations"))
         rows.append((_OK, "ripgrep", "installed") if shutil.which("rg") else
                     (_WARN, "ripgrep", "not installed; search_files falls back to grep"))
-        tg = config["channels"]["telegram"]
-        if tg["enabled"]:
-            allow = [str(u) for u in tg["allowFrom"]]
-            if not (tg["token"] or os.environ.get("TELEGRAM_BOT_TOKEN")):
-                rows.append((_FAIL, "Telegram", "enabled but no token (config or TELEGRAM_BOT_TOKEN)"))
-            elif not allow or "*" in allow:
-                rows.append((_WARN, "Telegram", "the bot is public: allowFrom is empty"))
-            else:
-                rows.append((_OK, "Telegram", f"{len(allow)} allowed user(s)"))
     finally:
         await agent.close()
     return report()

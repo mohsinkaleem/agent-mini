@@ -65,7 +65,7 @@ A check with `shell` runs it in the workspace (it must exit 0) and matches its s
 
 ## Metrics
 
-Per run (in the JSON report): pass/fail and the reason, seconds, tool calls and their names, tool errors, iterations, tool calls recovered from text, loop nudges, prompt and completion tokens, finish reason. Per report: pass rate, tasks passed in every run, pass rate per category, mean seconds, tool calls and prompt tokens. `--compare` puts several reports side by side, per task (`passed/runs` and mean calls) and per category.
+Per run (in the JSON report): pass/fail and the reason, seconds, tool calls and their names, tool errors, iterations, loop nudges, prompt and completion tokens, finish reason. Per report: pass rate, tasks passed in every run, pass rate per category, mean seconds, tool calls and prompt tokens. `--compare` puts several reports side by side, per task (`passed/runs` and mean calls) and per category.
 
 ## Results (2026-10-14)
 

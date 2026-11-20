@@ -4,9 +4,11 @@ The normal case is one exact match, in the first few lines of ``plan_edit``.
 
 The rest is a small-model fix. Models often copy ``old_text`` without its
 indentation, or with stray whitespace. When there is no exact match,
-``fuzzy_replace`` matches line by line ignoring the whitespace around each line.
-When that fails too, ``closest_match`` shows the most similar region so the
-model can copy it correctly on its next try.
+``fuzzy_replace`` matches line by line ignoring the whitespace around each line,
+and ``_fit_indentation`` gives ``new_text`` the file's indentation (or refuses,
+when it can't tell what that should be). When there is no match at all,
+``closest_match`` shows the most similar region so the model can copy it
+correctly on its next try.
 """
 
 from __future__ import annotations
@@ -52,6 +54,8 @@ def plan_edit(raw: str, old_text: str, new_text: str) -> EditPlan | str:
 
     # Small-model fix: no exact match, so try again ignoring whitespace around each line.
     match = fuzzy_replace(content, old, new)
+    if isinstance(match, str):
+        return match
     if isinstance(match, int):
         if match > 1:
             return _matches_many(match)
@@ -74,11 +78,13 @@ def _base_indent(lines: list[str]) -> str:
     return min((_indent_of(ln) for ln in lines if ln.strip()), key=len, default="")
 
 
-def fuzzy_replace(content: str, old: str, new: str) -> tuple[str, int, int] | int:
+def fuzzy_replace(content: str, old: str, new: str) -> tuple[str, int, int] | int | str:
     """Replace *old*, matched line by line ignoring the whitespace around each line.
 
     Returns ``(new_content, first_line, new_line_count)`` on a unique match,
-    otherwise the number of matches. *new* is re-indented to the file's indentation.
+    otherwise the number of matches. *new* is re-indented to the file's
+    indentation; when that can't be done safely, the result is an ``Error:``
+    string showing the matched lines, so the model can copy them exactly.
     """
     lines = content.split("\n")
     old_lines = old.strip("\n").split("\n")
@@ -93,14 +99,45 @@ def fuzzy_replace(content: str, old: str, new: str) -> tuple[str, int, int] | in
 
     i = hits[0]
     new_lines = new.strip("\n").split("\n") if new.strip("\n") else []
-    file_indent = _base_indent(lines[i : i + n])
-    old_indent = _base_indent(old_lines)
-    # The model copied the block shifted (usually without its indentation): shift
-    # the new text back the same way. If old and new disagree, new_text is trusted
-    # as written (a stray tab in old_text must not strip the tabs a Makefile needs).
-    if file_indent != old_indent and _base_indent(new_lines) == old_indent:
-        new_lines = [file_indent + ln[len(old_indent):] if ln.strip() else ln for ln in new_lines]
-    return "\n".join(lines[:i] + new_lines + lines[i + n :]), i, len(new_lines)
+    fitted = _fit_indentation(lines[i : i + n], old_lines, new_lines)
+    if fitted is None:
+        region = "\n".join(lines[i : i + n])
+        return (f"Error: old_text matches lines {i + 1}-{i + n} only when indentation is ignored, and the "
+                "indentation of new_text can't be fixed safely. Copy old_text exactly, including indentation, "
+                f"and indent new_text to match. The lines are:\n{region}")
+    return "\n".join(lines[:i] + fitted + lines[i + n :]), i, len(fitted)
+
+
+def _fit_indentation(file_lines: list[str], old_lines: list[str], new_lines: list[str]) -> list[str] | None:
+    """*new_lines* indented to fit the file, given that *old_lines* matched *file_lines* ignoring
+    whitespace. None when there is no safe way to tell what the indentation should be.
+    """
+    pairs = [(_indent_of(o), _indent_of(f)) for o, f in zip(old_lines, file_lines) if o.strip()]
+    if all(o == f for o, f in pairs):
+        return new_lines  # only whitespace at line ends differed
+
+    # Line for line: new_text is indented exactly like old_text (the same mistake in
+    # both), so each new line takes the indentation of the file line it replaces.
+    if len(new_lines) == len(old_lines) and all(
+        _indent_of(nl) == _indent_of(ol) for nl, ol in zip(new_lines, old_lines) if nl.strip()
+    ):
+        return [_indent_of(fl) + nl.lstrip() if nl.strip() else nl for nl, fl in zip(new_lines, file_lines)]
+
+    # new_text is indented differently from old_text: the model chose its indentation,
+    # so trust it as written (a stray tab in old_text must not strip the tabs a Makefile needs).
+    old_base, file_base = _base_indent(old_lines), _base_indent(file_lines)
+    if _base_indent(new_lines) != old_base:
+        return new_lines
+
+    # The whole block was copied shifted (usually without its indentation): shift new_text back.
+    shifted = all(o.startswith(old_base) and f.startswith(file_base) and o[len(old_base):] == f[len(file_base):]
+                  for o, f in pairs)
+    if shifted and all(nl.startswith(old_base) for nl in new_lines if nl.strip()):
+        return [file_base + nl[len(old_base):] if nl.strip() else nl for nl in new_lines]
+
+    # Some lines are off by more than others, and new_text has lines old_text doesn't.
+    # Guessing here silently breaks code (or a Makefile's tabs); asking costs one retry.
+    return None
 
 
 def closest_match(content: str, old: str) -> str:

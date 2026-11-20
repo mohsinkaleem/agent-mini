@@ -38,10 +38,6 @@ DEFAULTS: dict = {
         "blockedCommands": [],
     },
     "memory": {"enabled": True, "maxEntries": 1000},
-    "channels": {
-        "telegram": {"enabled": False, "token": "", "allowFrom": [], "allowShell": False,
-                     "sharedMemory": False, "streamResponses": True},
-    },
     "workspace": None,  # null = <home>/workspace
 }
 
@@ -86,8 +82,6 @@ def with_defaults(config: dict) -> dict:
         raise ValueError(
             f"Invalid tools.sandboxLevel {cfg['tools']['sandboxLevel']!r}. Use one of: {', '.join(SANDBOX_LEVELS)}."
         )
-    if level == "unrestricted" and cfg["tools"].get("restrictToWorkspace"):
-        level = "workspace"  # the setting from before 0.5 never widens access
     cfg["tools"]["sandboxLevel"] = level
     if cfg["agent"]["tier"] not in (None, *TIERS):
         raise ValueError(f"Invalid agent.tier {cfg['agent']['tier']!r}. Use one of: {', '.join(TIERS)}.")

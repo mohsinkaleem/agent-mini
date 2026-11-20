@@ -41,16 +41,15 @@ async def test_tool_call_then_answer(config, memory, workspace):
     assert tool_msg["content"] == "file contents"
 
 
-async def test_parallel_tool_calls(config, memory, workspace):
-    (workspace / "a.txt").write_text("aaa")
-    (workspace / "b.txt").write_text("bbb")
+async def test_several_tool_calls_run_in_order(config, memory, workspace):
+    """The second call depends on the first: run together, `cat` would find no file."""
     both = ChatResponse(tool_calls=[
-        ToolCall(id="1", name="read_file", arguments={"path": "a.txt"}),
-        ToolCall(id="2", name="read_file", arguments={"path": "b.txt"}),
+        ToolCall(id="1", name="shell", arguments={"command": "sleep 0.3; echo hi > made.txt"}),
+        ToolCall(id="2", name="shell", arguments={"command": "cat made.txt"}),
     ])
-    agent = _agent(config, memory, [both, ChatResponse(content="Got both")])
-    assert await agent.run("read both", []) == "Got both"
-    assert [m["content"] for m in _sent(agent, 1) if m["role"] == "tool"] == ["aaa", "bbb"]
+    agent = _agent(config, memory, [both, ChatResponse(content="Got it")])
+    assert await agent.run("make a file and read it", []) == "Got it"
+    assert [m["content"] for m in _sent(agent, 1) if m["role"] == "tool"] == ["(no output)", "hi"]
 
 
 async def test_tool_errors_reach_the_model(config, memory):
@@ -99,18 +98,6 @@ async def test_empty_reply_after_tools_gets_one_nudge(config, memory):
     agent = _agent(config, memory, responses)
     assert await agent.run("what's here?", []) == "Nothing here."
     assert "reply was empty" in _sent(agent, 2)[-1]["content"]
-
-
-async def test_tool_call_written_as_text_is_executed(config, memory, workspace):
-    (workspace / "a.txt").write_text("from disk")
-    responses = [
-        ChatResponse(content='<tool_call>{"name": "read_file", "arguments": {"path": "a.txt"}}</tool_call>'),
-        ChatResponse(content="done"),
-    ]
-    agent = _agent(config, memory, responses)
-    assert await agent.run("read a.txt", []) == "done"
-    assert any(m["role"] == "tool" and m["content"] == "from disk" for m in _sent(agent, 1))
-    assert agent.last_run["text_tool_calls"] == 1
 
 
 async def test_last_run_report(config, memory):

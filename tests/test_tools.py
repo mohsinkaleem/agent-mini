@@ -376,6 +376,28 @@ async def test_fuzzy_edit_trusts_new_text_when_old_text_is_mis_indented(tools: T
     assert (workspace / "Makefile").read_text() == "test:\n\tpytest -q -x\n\nlint:\n\truff check .\n"
 
 
+async def test_fuzzy_edit_carries_the_file_indentation_line_by_line(tools: Tools, workspace: Path):
+    """Seen in an eval: old_text and new_text had the same stray tab; shifting the block stripped Make's tab."""
+    (workspace / "Makefile").write_text("test:\n\tpytest -q\n\nlint:\n\truff check .\n")
+    result = await tools.execute("edit_file", {"path": "Makefile", "old_text": "\ttest:\n\tpytest -q",
+                                               "new_text": "\ttest:\n\tpytest -q -x"})
+    assert "matched ignoring whitespace" in result
+    assert (workspace / "Makefile").read_text() == "test:\n\tpytest -q -x\n\nlint:\n\truff check .\n"
+    (workspace / "m.py").write_text("def f():\n    if x:\n        return 1\n")
+    await tools.execute("edit_file", {"path": "m.py", "old_text": "if x:\nreturn 1", "new_text": "if x:\nreturn 2"})
+    assert (workspace / "m.py").read_text() == "def f():\n    if x:\n        return 2\n"
+
+
+async def test_fuzzy_edit_refuses_to_guess_indentation(tools: Tools, workspace: Path):
+    """Flattened old_text plus an added line: no safe way to tell how deep the new line goes."""
+    (workspace / "m.py").write_text("def f():\n    if x:\n        return 1\n")
+    result = await tools.execute("edit_file", {"path": "m.py", "old_text": "if x:\nreturn 1",
+                                               "new_text": "if x:\nlog()\nreturn 1"})
+    assert result.startswith("Error: old_text matches lines 2-3 only when indentation is ignored")
+    assert result.endswith("    if x:\n        return 1")
+    assert (workspace / "m.py").read_text() == "def f():\n    if x:\n        return 1\n"
+
+
 async def test_missing_tool_name(tools: Tools):
     assert (await tools.execute(None, {})).startswith("Error: unknown tool ''")
 

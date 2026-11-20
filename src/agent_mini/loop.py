@@ -32,9 +32,7 @@ from .context import SUMMARIZE_AT, clip, prune, summarize_history
 from .memory import Memory
 from .prompt import build_system_prompt, context_overhead, estimate_messages_tokens, get_profile, num_ctx_for
 from .providers.base import ChatResponse, ModelInfo, Provider, StreamCallback, ToolCall
-from .providers.parsing import parse_text_tool_calls
 from .tools import Tools
-from .vision import image_parts
 
 log = logging.getLogger("agent-mini")
 
@@ -86,20 +84,18 @@ ToolEventCallback = Callable[[ToolEvent], Awaitable[None]]
 class _Turn:
     """What one ``run()`` keeps track of.
 
-    It lives only as long as the run, so two gateway users talking to the same
-    agent at once can't mix up each other's state.
+    It lives only as long as the run, so two runs on the same agent at once
+    can't mix up each other's state.
     """
 
     user_message: str
     conversation: list[dict]  # the saved history; the finished turn is appended to it
     messages: list[dict]  # what the model sees: system prompt, history, this turn so far
     tool_defs: list[dict]
-    known_names: set[str]  # tool names and aliases, for recovering calls written as text
     trace: list[str] = field(default_factory=list)  # e.g. "read_file(notes.txt)"
     signatures: list[str] = field(default_factory=list)  # one per tool call, for loop detection
     tool_log: list[dict] = field(default_factory=list)  # for the run report
     loop_nudges: int = 0
-    text_calls: int = 0  # tool calls recovered from the reply text
     nudged_empty: bool = False
 
 
@@ -135,8 +131,6 @@ class AgentLoop:
         self.memory = memory
         self.tools = Tools(self.config, memory)
         self.model_info: ModelInfo | None = None
-        # The gateway turns this off: remote users must not attach local files.
-        self.allow_local_images = True
         self.session_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.turn_usage = dict(self.session_usage)
         self.turn_iterations = 0
@@ -204,7 +198,7 @@ class AgentLoop:
                 return self._finish(turn, "provider_error", f"Error communicating with LLM: {e}",
                                     saved="[No reply: the model provider failed.]")
             self._add_usage(response.usage)
-            calls, text = self._tool_calls_in(response, turn)
+            calls, text = response.tool_calls or [], (response.content or "").strip()
 
             # 2. No tool calls: the model has answered.
             if not calls:
@@ -244,13 +238,11 @@ class AgentLoop:
         names = self.tools.names()
         memories = self.memory.recent(self.profile.memory_items) if "recall" in names else []
         system = build_system_prompt(self.config, names, self.profile, memories)
-        content = image_parts(user_message, self.tools.workspace, self.allow_local_images) or user_message
         turn = _Turn(
             user_message=user_message,
             conversation=conversation,
-            messages=[{"role": "system", "content": system}, *conversation, {"role": "user", "content": content}],
+            messages=[{"role": "system", "content": system}, *conversation, {"role": "user", "content": user_message}],
             tool_defs=self.tools.definitions(),
-            known_names=self.tools.known_names(),
         )
         self.turn_usage = {k: 0 for k in self.session_usage}
         # Kept up to date as the turn goes, so an interrupted run can still be reported.
@@ -264,20 +256,9 @@ class AgentLoop:
                 self.turn_usage[key] += value or 0
                 self.session_usage[key] += value or 0
 
-    def _tool_calls_in(self, response: ChatResponse, turn: _Turn) -> tuple[list[ToolCall], str]:
-        """The tool calls in a reply, and its text."""
-        calls, text = response.tool_calls or [], (response.content or "").strip()
-        if not calls and text:
-            # Small-model fix: the model wrote its tool calls as text instead of making them.
-            calls, text = parse_text_tool_calls(text, turn.known_names)
-            if calls:
-                turn.text_calls += len(calls)
-                log.info("Recovered %d tool call(s) written as text", len(calls))
-        return calls, text
-
     async def _run_tools(self, turn: _Turn, calls: list[ToolCall], text: str,
                          on_tool_event: ToolEventCallback | None) -> None:
-        """Run the calls in parallel; append the assistant's message and every result to the messages."""
+        """Run the calls in order; append the assistant's message and every result to the messages."""
         turn.messages.append({
             "role": "assistant",
             "content": text,
@@ -287,8 +268,10 @@ class AgentLoop:
                 for tc in calls
             ],
         })
-        results = await asyncio.gather(*(self._run_tool(tc, on_tool_event) for tc in calls))
-        for tc, result in zip(calls, results):
+        for tc in calls:
+            # One at a time, not in parallel: models expect a later call to see what an
+            # earlier one did ("write a file" then "run it" in the same reply).
+            result = await self._run_tool(tc, on_tool_event)
             turn.trace.append(_trace_entry(tc.name, tc.arguments))
             turn.tool_log.append({"name": tc.name, "args": tc.arguments, "error": result.startswith("Error:")})
             signature = [tc.name, tc.arguments, result[:_SIGNATURE_RESULT_CHARS]]
@@ -316,7 +299,7 @@ class AgentLoop:
         self._record(turn.conversation, turn.user_message, saved or reply, turn.trace)
         self.finish_reason = reason
         self.last_run.update(finish_reason=reason, reply=reply, iterations=self.turn_iterations,
-                             text_tool_calls=turn.text_calls, loop_nudges=turn.loop_nudges)
+                             loop_nudges=turn.loop_nudges)
         return reply
 
     @staticmethod

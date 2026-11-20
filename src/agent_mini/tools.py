@@ -198,10 +198,6 @@ class Tools:
     def names(self) -> list[str]:
         return list(self._tools)
 
-    def known_names(self) -> set[str]:
-        """Names a model may use for a tool, aliases included (for recovering calls written as text)."""
-        return set(self._tools) | {alias for alias, name in TOOL_ALIASES.items() if name in self._tools}
-
     async def close(self) -> None:
         await self._http.aclose()
 

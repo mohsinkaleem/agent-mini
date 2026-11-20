@@ -17,8 +17,6 @@ def test_defaults_fill_in_and_user_values_win():
     assert cfg["tools"]["shellTimeout"] == 120
     assert cfg["workspace"] == str(agent_home() / "workspace")
     assert with_defaults(cfg) == cfg  # idempotent
-    legacy = {"tools": {"sandboxLevel": "unrestricted", "restrictToWorkspace": True}}
-    assert with_defaults(legacy)["tools"]["sandboxLevel"] == "workspace"  # never widens access
 
 
 @pytest.mark.parametrize("bad, message", [
