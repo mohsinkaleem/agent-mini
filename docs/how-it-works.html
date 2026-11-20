@@ -4,6 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>How Agent Mini Works</title>
+<meta name="description" content="An interactive tour of Agent Mini: the agent loop, the parts, one message step by step, the tool call checker, context budgets and the safety layers.">
+<link rel="canonical" href="https://mohsinkaleem.github.io/agent-mini/how-it-works.html">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Agent Mini">
+<meta property="og:title" content="How Agent Mini works">
+<meta property="og:description" content="An interactive tour of a small AI agent: step through one message, try the tool call checker, and see how it keeps the context small.">
+<meta property="og:url" content="https://mohsinkaleem.github.io/agent-mini/how-it-works.html">
+<meta property="og:image" content="https://mohsinkaleem.github.io/agent-mini/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Agent Mini: a small AI agent you can read in an afternoon">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d6e66'/%3E%3Cpath d='M8 11l6 5-6 5M16 22h8' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
@@ -247,7 +260,8 @@ footer { font-size: var(--step--1); color: var(--ink-soft); border-top: 1px soli
 <body>
 <div class="shell">
   <nav class="rail" aria-label="Sections">
-    <a class="brand" href="#top">agent-mini</a>
+    <a class="brand" href="index.html">agent-mini</a>
+    <a class="nav" href="index.html">← Home</a>
     <a class="nav" href="#loop">The loop</a>
     <a class="nav" href="#parts">The parts</a>
     <a class="nav" href="#walk">One message, step by step</a>

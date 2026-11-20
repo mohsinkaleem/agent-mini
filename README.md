@@ -4,6 +4,7 @@
 [![CI](https://github.com/mohsinkaleem/agent-mini/actions/workflows/ci.yml/badge.svg)](https://github.com/mohsinkaleem/agent-mini/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/website-agent--mini-0d6e66)](https://mohsinkaleem.github.io/agent-mini/)
 
 A small AI agent you can read in an afternoon. It runs shell commands, edits files, searches the web and remembers things, using a small model on your own machine or any OpenAI-compatible API.
 
@@ -12,6 +13,8 @@ A small AI agent you can read in an afternoon. It runs shell commands, edits fil
 - **Local-first:** uses Ollama by default. OpenAI, LM Studio, vLLM and llama.cpp work too.
 - **Guard rails:** a workspace sandbox by default, approval before commands and edits (`agent-mini init` turns it on), and `/undo` for file changes.
 - **Extras:** persistent memory, saved sessions, and custom tools as plugins.
+
+![Agent Mini adding "buy milk" to todo.txt: it reads the file, shows the diff for approval, edits the file, and /undo puts it back](https://raw.githubusercontent.com/mohsinkaleem/agent-mini/main/docs/demo.gif)
 
 ## Quick start
 
@@ -107,7 +110,7 @@ The guards reduce risk, but they aren't a security boundary. Approval is the rea
 ## Learn how it works
 
 - [docs/LEARN.md](docs/LEARN.md) builds an agent in about 100 lines, then walks through what the real one adds. Start here.
-- [docs/how-it-works.html](docs/how-it-works.html) is an interactive tour of how one message flows through the agent.
+- [How it works](https://mohsinkaleem.github.io/agent-mini/how-it-works.html) is an interactive tour of how one message flows through the agent. Its source is [docs/how-it-works.html](docs/how-it-works.html).
 - [docs/TECHNICAL_IMPLEMENTATION.md](docs/TECHNICAL_IMPLEMENTATION.md) covers the full design, including every small-model fix.
 - [evals/README.md](evals/README.md) describes the eval harness and has the latest results.
 

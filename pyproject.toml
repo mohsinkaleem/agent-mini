@@ -39,7 +39,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mohsinkaleem/agent-mini"
+Homepage = "https://mohsinkaleem.github.io/agent-mini/"
+Documentation = "https://mohsinkaleem.github.io/agent-mini/how-it-works.html"
 Repository = "https://github.com/mohsinkaleem/agent-mini"
 Issues = "https://github.com/mohsinkaleem/agent-mini/issues"
 
@@ -48,6 +49,9 @@ agent-mini = "agent_mini.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_mini"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["docs/demo.*", "docs/og.png"]  # the demo GIF, the script that records it, and the website's social image
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

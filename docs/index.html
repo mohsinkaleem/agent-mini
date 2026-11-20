@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agent Mini</title>
+<meta name="description" content="A small AI agent you can read in an afternoon. It runs shell commands, edits files, searches the web and remembers things, using a small model on your own machine or any OpenAI-compatible API.">
+<link rel="canonical" href="https://mohsinkaleem.github.io/agent-mini/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Agent Mini">
+<meta property="og:title" content="Agent Mini: a small AI agent you can read in an afternoon">
+<meta property="og:description" content="About 3,100 lines of Python, tuned for 4B and 9B local models. Shell, files, web and memory, with a workspace sandbox, approval and /undo.">
+<meta property="og:url" content="https://mohsinkaleem.github.io/agent-mini/">
+<meta property="og:image" content="https://mohsinkaleem.github.io/agent-mini/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Agent Mini: a small AI agent you can read in an afternoon">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d6e66'/%3E%3Cpath d='M8 11l6 5-6 5M16 22h8' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Same tokens and type as how-it-works.html, so the two pages read as one site. */
+:root {
+  --paper: #f2f5f4;
+  --sheet: #ffffff;
+  --ink: #17242b;
+  --ink-soft: #4b5c63;
+  --rule: #d3dcda;
+  --grid: #e3e9e7;
+  --accent: #0d6e66;
+  --accent-wash: #dcefec;
+  --signal: #b9770e;
+  --signal-wash: #fbefd6;
+  --term: #171b22;
+  --term-ink: #d6dde4;
+  --term-dim: #8b96a3;
+  /* Chart series (validated pair: lightness, chroma, CVD and contrast on --sheet). */
+  --series-before: #c98500;
+  --series-after: #00897b;
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Source Sans 3", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --step--2: 0.78rem;
+  --step--1: 0.875rem;
+  --step-0: 1rem;
+  --step-1: 1.2rem;
+  --step-2: 1.55rem;
+  --step-3: clamp(2.2rem, 5.4vw, 3.6rem);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0f1719; --sheet: #172225; --ink: #dde7e5; --ink-soft: #9aaeac; --rule: #2c3b3e; --grid: #1c292c;
+    --accent: #4cc2b4; --accent-wash: #173634; --signal: #e8b54d; --signal-wash: #3a2f17;
+    --term: #0b1012; --term-ink: #d6dde4; --term-dim: #8b96a3;
+    --series-before: #c98500; --series-after: #2fa597;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0f1719; --sheet: #172225; --ink: #dde7e5; --ink-soft: #9aaeac; --rule: #2c3b3e; --grid: #1c292c;
+  --accent: #4cc2b4; --accent-wash: #173634; --signal: #e8b54d; --signal-wash: #3a2f17;
+  --term: #0b1012; --term-ink: #d6dde4; --term-dim: #8b96a3;
+  --series-before: #c98500; --series-after: #2fa597;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; } }
+body {
+  margin: 0;
+  background: var(--paper);
+  background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 28px 28px;
+  color: var(--ink);
+  font: 400 var(--step-0)/1.6 var(--font-body);
+}
+a { color: var(--accent); text-underline-offset: 3px; }
+code, kbd { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--accent-wash); padding: 0.05em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+:focus-visible { outline: 3px solid var(--signal); outline-offset: 2px; border-radius: 4px; }
+h1, h2, h3 { font-family: var(--font-display); line-height: 1.12; text-wrap: balance; margin: 0; }
+h2 { font-size: var(--step-2); font-weight: 700; letter-spacing: -0.01em; }
+h3 { font-size: var(--step-1); font-weight: 700; }
+p { margin: 0; }
+ul { margin: 0; }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding-inline: 24px; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 18px; flex-wrap: wrap; }
+.brand { font-family: var(--font-display); font-weight: 800; font-size: 1.15rem; color: var(--ink); text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }
+.brand svg { flex: none; }
+.top nav { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: var(--step--1); }
+.top nav a { color: var(--ink-soft); text-decoration: none; }
+.top nav a:hover { color: var(--accent); }
+
+main { display: flex; flex-direction: column; gap: 80px; padding-block: 24px 72px; }
+section { display: flex; flex-direction: column; gap: 18px; scroll-margin-top: 16px; }
+.eyebrow { font-family: var(--font-mono); font-size: var(--step--2); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.prose { max-width: 68ch; display: flex; flex-direction: column; gap: 12px; }
+.muted { color: var(--ink-soft); }
+.small { font-size: var(--step--1); }
+.panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius); padding: 20px; min-width: 0; }
+
+/* Hero */
+.hero { gap: 22px; }
+.hero h1 { font-size: var(--step-3); font-weight: 800; letter-spacing: -0.02em; max-width: 18ch; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.lede { font-size: 1.18rem; max-width: 62ch; }
+.facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-block: 1px solid var(--rule); }
+.fact { padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; border-left: 1px solid var(--rule); }
+.fact:first-child { border-left: 0; padding-left: 0; }
+.fact b { font-family: var(--font-display); font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+.fact span { font-size: var(--step--1); color: var(--ink-soft); line-height: 1.3; }
+
+.start { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.code { position: relative; background: var(--term); color: var(--term-ink); border-radius: var(--radius); padding: 16px 18px; min-width: 0; }
+.code pre { margin: 0; overflow-x: auto; font: 400 13.5px/1.7 var(--font-mono); }
+.code .c { color: var(--term-dim); }
+.code .p { color: var(--term-dim); user-select: none; }
+.code .k { color: #7ee0d2; }
+.code .s { color: #f0c674; }
+.copy { position: absolute; top: 10px; right: 10px; font: 600 var(--step--2) var(--font-body); color: var(--term-ink); background: transparent; border: 1px solid #3a4550; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.copy:hover { border-color: var(--term-ink); }
+.cta { display: flex; flex-direction: column; gap: 12px; }
+.cta .row { display: flex; flex-wrap: wrap; gap: 10px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; font: 600 var(--step--1) var(--font-body); border-radius: 8px; border: 1px solid var(--rule); background: var(--sheet); color: var(--ink); padding: 10px 16px; text-decoration: none; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--sheet); }
+
+/* Demo */
+.demo { margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.term { background: var(--term); border-radius: var(--radius); overflow: hidden; border: 1px solid var(--rule); max-width: 900px; }
+.term-bar { display: flex; align-items: center; gap: 6px; padding: 9px 14px; border-bottom: 1px solid #262d36; font: 400 var(--step--2) var(--font-mono); color: var(--term-dim); }
+.term-bar i { width: 10px; height: 10px; border-radius: 50%; background: #2c343e; display: inline-block; }
+.term-bar span { margin-left: 8px; }
+.term img { display: block; width: 100%; height: auto; }
+.demo figcaption { font-size: var(--step--1); color: var(--ink-soft); max-width: 900px; }
+
+/* Eval chart */
+.viz-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.seg-ctl { display: inline-flex; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; background: var(--sheet); }
+.seg-ctl button { font: 600 var(--step--1) var(--font-body); color: var(--ink-soft); background: transparent; border: 0; padding: 7px 14px; cursor: pointer; }
+.seg-ctl button + button { border-left: 1px solid var(--rule); }
+.seg-ctl button[aria-pressed="true"] { background: var(--accent-wash); color: var(--ink); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: var(--step--1); color: var(--ink-soft); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 10px; border-radius: 0 3px 3px 0; display: inline-block; }
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.tile { background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.tile .name { font-weight: 600; font-size: var(--step--1); }
+.tile .better { font-size: var(--step--2); color: var(--ink-soft); }
+.tile .big { font-family: var(--font-display); font-weight: 800; font-size: 1.9rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.tile .delta { font-size: var(--step--1); color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.bars { display: flex; flex-direction: column; gap: 2px; padding-left: 0; border-left: 1px solid var(--ink-soft); }
+.bar-row { display: grid; grid-template-columns: minmax(0, 1fr); padding: 4px 0; cursor: default; }
+.bar-row .track { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.bar-row .bar { height: 12px; border-radius: 0 4px 4px 0; flex: none; transition: width .35s ease; }
+.bar-row .val { font: 600 var(--step--2) var(--font-mono); color: var(--ink); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bar-row.before .bar { background: var(--series-before); }
+.bar-row.after .bar { background: var(--series-after); }
+.bar-row:hover .val { text-decoration: underline; text-underline-offset: 3px; }
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--ink); color: var(--paper); font-size: var(--step--1); line-height: 1.4; padding: 7px 10px; border-radius: 6px; max-width: 260px; opacity: 0; transition: opacity .1s; }
+.tip.on { opacity: 1; }
+.viz-foot { display: flex; flex-direction: column; gap: 8px; font-size: var(--step--1); color: var(--ink-soft); }
+details summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.table-wrap { overflow-x: auto; margin-top: 10px; }
+table { border-collapse: collapse; font-size: var(--step--1); min-width: 520px; width: 100%; background: var(--sheet); }
+th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); font-variant-numeric: tabular-nums; }
+th:first-child, td:first-child { text-align: left; }
+thead th { font-weight: 600; color: var(--ink-soft); }
+.fixes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.fix { display: flex; flex-direction: column; gap: 6px; }
+.fix b { font-family: var(--font-display); font-size: 1.05rem; }
+.fix p { font-size: var(--step--1); color: var(--ink-soft); }
+
+/* Tools */
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 20px; align-items: start; }
+.tool-list { list-style: none; padding: 4px 20px; display: flex; flex-direction: column; }
+.tool-list li { display: grid; grid-template-columns: 11.5rem minmax(0, 1fr); gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--rule); font-size: var(--step--1); }
+.tool-list li:last-child { border-bottom: 0; }
+.tool-list code { background: none; padding: 0; color: var(--accent); font-weight: 600; }
+.plugin { display: flex; flex-direction: column; gap: 10px; }
+
+/* Safety */
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.card { display: flex; flex-direction: column; gap: 8px; }
+.card ul { padding-left: 1.1em; display: flex; flex-direction: column; gap: 4px; font-size: var(--step--1); }
+.note { border-left: 3px solid var(--signal); background: var(--signal-wash); padding: 10px 14px; border-radius: 0 8px 8px 0; font-size: var(--step--1); max-width: 72ch; }
+
+/* Providers */
+.prov { width: 100%; min-width: 0; }
+.prov td, .prov th { text-align: left; }
+
+/* Learn */
+.learn { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.learn a { text-decoration: none; color: var(--ink); display: flex; flex-direction: column; gap: 6px; transition: border-color .15s; }
+.learn a:hover { border-color: var(--accent); }
+.learn .kind { font: 400 var(--step--2) var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); }
+.learn b { font-family: var(--font-display); font-size: 1.1rem; line-height: 1.2; }
+.learn span:last-child { font-size: var(--step--1); color: var(--ink-soft); }
+
+footer { border-top: 1px solid var(--rule); padding-block: 20px 40px; font-size: var(--step--1); color: var(--ink-soft); display: flex; flex-wrap: wrap; gap: 6px 18px; }
+
+@media (max-width: 960px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .learn { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .start, .two { grid-template-columns: minmax(0, 1fr); }
+  .cards, .fixes { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .wrap { padding-inline: 16px; }
+  main { gap: 60px; }
+  .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fact:nth-child(3) { border-left: 0; padding-left: 0; }
+  .fact:nth-child(n+3) { border-top: 1px solid var(--rule); }
+  .tiles, .learn { grid-template-columns: minmax(0, 1fr); }
+  .tool-list li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .top nav { gap: 4px 14px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <a class="brand" href="./">
+      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><path d="M8 11l6 5-6 5M16 22h8" fill="none" stroke="var(--sheet)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      agent-mini
+    </a>
+    <nav aria-label="Site">
+      <a href="how-it-works.html">How it works</a>
+      <a href="#evals">Evals</a>
+      <a href="#tools">Tools</a>
+      <a href="#safety">Safety</a>
+      <a href="https://github.com/mohsinkaleem/agent-mini">GitHub</a>
+      <a href="https://pypi.org/project/agent-mini/">PyPI</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero" id="top">
+      <span class="eyebrow">v0.7.0 · MIT · Python 3.11+</span>
+      <h1>A small AI agent you can <em>read in an afternoon</em></h1>
+      <p class="lede">Agent Mini runs shell commands, edits files, searches the web and remembers things. It is tuned for small models running on your own machine, and it works with any OpenAI-compatible API too.</p>
+      <div class="facts">
+        <div class="fact"><b>~3,100</b><span>lines of Python</span></div>
+        <div class="fact"><b>3</b><span>dependencies: httpx, click, rich</span></div>
+        <div class="fact"><b>10</b><span>built-in tools, plus your plugins</span></div>
+        <div class="fact"><b>97%</b><span>eval pass rate on a 4B model</span></div>
+      </div>
+      <div class="start">
+        <div class="code">
+          <button class="copy" type="button" data-copy="pip install agent-mini&#10;ollama pull qwen3.5:9b&#10;agent-mini init&#10;agent-mini chat">Copy</button>
+<pre><span class="p">$ </span><span class="k">pip install</span> agent-mini
+<span class="p">$ </span><span class="k">ollama pull</span> qwen3.5:9b    <span class="c"># or qwen3.5:4b on a smaller machine</span>
+<span class="p">$ </span><span class="k">agent-mini init</span>           <span class="c"># writes ~/.agent-mini/config.json</span>
+<span class="p">$ </span><span class="k">agent-mini chat</span></pre>
+        </div>
+        <div class="cta">
+          <p class="muted small"><code>agent-mini init</code> turns on approval for the shell and file edits. <code>agent-mini doctor</code> checks the provider, model and setup if something doesn't work.</p>
+          <div class="row">
+            <a class="btn primary" href="how-it-works.html">See how it works →</a>
+            <a class="btn" href="https://github.com/mohsinkaleem/agent-mini">GitHub</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="demo" aria-labelledby="demo-h">
+      <span class="eyebrow">Demo</span>
+      <h2 id="demo-h">Ask, check the diff, undo</h2>
+      <figure class="demo">
+        <div class="term">
+          <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>agent-mini chat</span></div>
+          <img src="demo.gif" width="885" height="567" loading="lazy" alt="Agent Mini adding &quot;buy milk&quot; to todo.txt: it reads the file, asks for approval and shows the diff, edits the file, and /undo puts it back.">
+        </div>
+        <figcaption>With approval on, the agent reads <code>todo.txt</code>, shows the diff before it edits, and <code>/undo</code> puts the file back. qwen3.5:9b on Ollama; pauses longer than 3 seconds are trimmed.</figcaption>
+      </figure>
+    </section>
+
+    <section id="evals" aria-labelledby="evals-h">
+      <span class="eyebrow">Built for small models</span>
+      <h2 id="evals-h">Measured on 36 real tasks, not guessed</h2>
+      <div class="prose">
+        <p>Small models make their own kind of mistakes: paths that start with <code>/</code>, renames done by copying, edits that lose tabs. Agent Mini is tuned against an <a href="https://github.com/mohsinkaleem/agent-mini/tree/main/evals">eval harness</a> of 36 tasks, each run three times. Every fix came from reading the transcripts of the runs that failed.</p>
+      </div>
+
+      <div class="panel" style="display:flex;flex-direction:column;gap:16px">
+        <div class="viz-head">
+          <div class="seg-ctl" role="group" aria-label="Model">
+            <button type="button" data-model="4b" aria-pressed="true">qwen3.5:4b</button>
+            <button type="button" data-model="9b" aria-pressed="false">qwen3.5:9b</button>
+          </div>
+          <div class="legend" aria-hidden="true">
+            <span><i style="background:var(--series-before)"></i>v0.4.0</span>
+            <span><i style="background:var(--series-after)"></i>v0.5 rewrite</span>
+          </div>
+        </div>
+        <div class="tiles" id="tiles" aria-live="polite"></div>
+        <div class="viz-foot">
+          <p id="vizNote"></p>
+          <p>Ollama on an M4 Pro (48 GB), measured 2026-10-14. Each tile's bars start at zero.</p>
+          <details>
+            <summary>Show as a table</summary>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th scope="col">Per task</th><th scope="col">4b · v0.4.0</th><th scope="col">4b · v0.5</th><th scope="col">9b · v0.4.0</th><th scope="col">9b · v0.5</th></tr></thead>
+                <tbody>
+                  <tr><th scope="row">Pass rate</th><td>88.0% (95/108)</td><td>97.2% (105/108)</td><td>97.2% (105/108)</td><td>96.3% (104/108)</td></tr>
+                  <tr><th scope="row">Tasks passed in all 3 runs</th><td>27/36</td><td>34/36</td><td>34/36</td><td>34/36</td></tr>
+                  <tr><th scope="row">Tool calls</th><td>3.0</td><td>2.3</td><td>2.7</td><td>2.2</td></tr>
+                  <tr><th scope="row">Seconds</th><td>10.3</td><td>5.8</td><td>11.4</td><td>9.5</td></tr>
+                  <tr><th scope="row">Prompt tokens</th><td>6,608</td><td>5,121</td><td>6,275</td><td>4,831</td></tr>
+                  <tr><th scope="row">Timeouts</th><td>3</td><td>0</td><td>0</td><td>0</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
+          <p><a href="https://github.com/mohsinkaleem/agent-mini/blob/main/evals/README.md#results-2026-10-14">Full results, per category and per candidate →</a></p>
+        </div>
+      </div>
+
+      <div class="fixes">
+        <div class="panel fix"><b>Paths that start with <code>/</code></b><p>Small models write <code>/config.json</code> for a file in the workspace. Each "Access denied" cost them three or four calls, so these paths now resolve inside the workspace. <code>/etc/hosts</code> is still refused.</p></div>
+        <div class="panel fix"><b>No blind overwrites</b><p>A 9B model "appended" to a script by writing only the new line. <code>write_file</code> now refuses to replace a file the agent hasn't read.</p></div>
+        <div class="panel fix"><b>Edits that keep tabs</b><p>Fuzzy matching used to strip tabs, which broke Makefiles. Edits now keep them, and 4B robustness went to 12 of 12.</p></div>
+      </div>
+    </section>
+
+    <section id="tools" aria-labelledby="tools-h">
+      <span class="eyebrow">Tools</span>
+      <h2 id="tools-h">Ten tools, plus your own</h2>
+      <div class="two">
+        <ul class="panel tool-list">
+          <li><code>shell</code><span>Runs a command in the workspace</span></li>
+          <li><code>read_file</code><span>Reads a file, or part of one</span></li>
+          <li><span><code>write_file</code>, <code>edit_file</code></span><span>Creates files and edits them in place</span></li>
+          <li><code>list_files</code><span>Finds files by glob</span></li>
+          <li><code>search_files</code><span>Searches file contents</span></li>
+          <li><span><code>web_search</code>, <code>web_fetch</code></span><span>Searches DuckDuckGo and fetches pages</span></li>
+          <li><span><code>remember</code>, <code>recall</code></span><span>Saves facts across sessions and searches them</span></li>
+        </ul>
+        <div class="plugin">
+          <p class="small">To add a tool, drop a <code>.py</code> file that defines <code>TOOL_DEF</code> and <code>handler</code> into <code>~/.agent-mini/plugins/</code>:</p>
+          <div class="code">
+<pre><span class="k">from</span> datetime <span class="k">import</span> datetime, timezone
+
+TOOL_DEF = {
+    <span class="s">"type"</span>: <span class="s">"function"</span>,
+    <span class="s">"function"</span>: {
+        <span class="s">"name"</span>: <span class="s">"get_timestamp"</span>,
+        <span class="s">"description"</span>: <span class="s">"Get the current UTC timestamp."</span>,
+        <span class="s">"parameters"</span>: {<span class="s">"type"</span>: <span class="s">"object"</span>, <span class="s">"properties"</span>: {}, <span class="s">"required"</span>: []},
+    },
+}
+
+<span class="k">async def</span> handler(arguments: dict) -> str:
+    <span class="k">return</span> datetime.now(timezone.utc).isoformat()</pre>
+          </div>
+          <p class="small muted">Put an <code>AGENTS.md</code> in the workspace to give the agent project instructions, such as build commands or code style.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="safety" aria-labelledby="safety-h">
+      <span class="eyebrow">Safety</span>
+      <h2 id="safety-h">Guard rails, in layers</h2>
+      <div class="cards">
+        <div class="panel card">
+          <h3>Sandbox</h3>
+          <ul>
+            <li><code>workspace</code> (the default) keeps every path inside the workspace.</li>
+            <li><code>readonly</code> also removes the shell and file-writing tools.</li>
+            <li><code>unrestricted</code> allows any path.</li>
+          </ul>
+        </div>
+        <div class="panel card">
+          <h3>Approval</h3>
+          <ul>
+            <li>Tools in <code>tools.confirm</code> ask before they run. <code>agent-mini init</code> adds the shell and file edits.</li>
+            <li>Press <kbd>d</kbd> at the prompt to see the diff first.</li>
+            <li><code>/undo</code> reverts the last file change.</li>
+          </ul>
+        </div>
+        <div class="panel card">
+          <h3>Guards</h3>
+          <ul>
+            <li>Commands like <code>rm -rf</code> and <code>sudo</code> are blocked.</li>
+            <li>The shell doesn't get environment variables that look like secrets.</li>
+            <li><code>web_fetch</code> refuses private addresses.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="note">The guards reduce risk, but they aren't a security boundary. Approval is the real control. Without <code>tools.confirm</code>, the agent runs commands and edits files without asking.</p>
+    </section>
+
+    <section id="models" aria-labelledby="models-h">
+      <span class="eyebrow">Models</span>
+      <h2 id="models-h">Local first, any OpenAI-compatible API</h2>
+      <div class="two">
+        <div class="panel table-wrap" style="margin:0">
+          <table class="prov">
+            <thead><tr><th scope="col">Provider</th><th scope="col">Use it for</th></tr></thead>
+            <tbody>
+              <tr><td><code>ollama</code></td><td>Ollama, the default</td></tr>
+              <tr><td><code>openai</code></td><td>OpenAI, with a key from the config or the environment</td></tr>
+              <tr><td><code>local</code></td><td>LM Studio, vLLM, llama.cpp or any OpenAI-compatible server</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="prose small">
+          <p>Tuned and measured on <b>qwen3.5:4b</b> and <b>qwen3.5:9b</b>. They are 3.4 GB and 6.6 GB downloads. Bigger and cloud models get a larger budget for rounds and context.</p>
+          <p>Settings live in <code>~/.agent-mini/config.json</code>, and everything has a default. <a href="https://github.com/mohsinkaleem/agent-mini/blob/main/config.example.json">config.example.json</a> lists every setting.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="learn" aria-labelledby="learn-h">
+      <span class="eyebrow">Learn</span>
+      <h2 id="learn-h">Read how it works</h2>
+      <div class="learn">
+        <a class="panel" href="how-it-works.html"><span class="kind">Interactive</span><b>How Agent Mini works</b><span>Step through one message, try the tool-call checker, see the context budget.</span></a>
+        <a class="panel" href="https://github.com/mohsinkaleem/agent-mini/blob/main/docs/LEARN.md"><span class="kind">Guide</span><b>Build an agent in 100 lines</b><span>Then see what goes wrong on real models, and how the real agent deals with it.</span></a>
+        <a class="panel" href="https://github.com/mohsinkaleem/agent-mini/blob/main/docs/TECHNICAL_IMPLEMENTATION.md"><span class="kind">Reference</span><b>The full design</b><span>Every module and every small-model fix.</span></a>
+        <a class="panel" href="https://github.com/mohsinkaleem/agent-mini/tree/main/evals"><span class="kind">Evals</span><b>The eval harness</b><span>The task format, the 36 tasks and how to run them on your model.</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Agent Mini v0.7.0 · MIT license</span>
+    <a href="https://github.com/mohsinkaleem/agent-mini">GitHub</a>
+    <a href="https://pypi.org/project/agent-mini/">PyPI</a>
+    <a href="https://github.com/mohsinkaleem/agent-mini/blob/main/CONTRIBUTING.md">Contributing</a>
+  </footer>
+</div>
+
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+
+  /* Copy buttons */
+  document.querySelectorAll(".copy").forEach((b) => b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "Copied"; }
+    catch { b.textContent = "Select and copy"; }
+    setTimeout(() => (b.textContent = "Copy"), 1600);
+  }));
+
+  /* Eval chart: v0.4.0 vs the v0.5 rewrite. Numbers from evals/README.md (2026-10-14). */
+  const DATA = {
+    "4b": { name: "qwen3.5:4b",
+      before: { pass: 88.0, runs: "95 of 108", calls: 3.0, secs: 10.3, tokens: 6608 },
+      after:  { pass: 97.2, runs: "105 of 108", calls: 2.3, secs: 5.8, tokens: 5121 },
+      note: "On the 4B model, the rewrite passes 10 more runs out of 108 and uses about a quarter fewer tool calls." },
+    "9b": { name: "qwen3.5:9b",
+      before: { pass: 97.2, runs: "105 of 108", calls: 2.7, secs: 11.4, tokens: 6275 },
+      after:  { pass: 96.3, runs: "104 of 108", calls: 2.2, secs: 9.5, tokens: 4831 },
+      note: "On the 9B model the pass rate held steady. It lost three chat runs to an “answer directly” prompt rule that has since been removed, while tool calls and prompt tokens both dropped." },
+  };
+  const pct = (a, b) => { const d = Math.round(((b - a) / a) * 100); return (d > 0 ? "+" : d < 0 ? "−" : "") + Math.abs(d) + "%"; };
+  const pts = (a, b) => { const d = b - a; return (d > 0 ? "+" : d < 0 ? "−" : "") + Math.abs(d).toFixed(1) + " pts"; };
+  const METRICS = [
+    { key: "pass", name: "Pass rate", better: "higher is better", fmt: (v) => v.toFixed(1) + "%", delta: pts },
+    { key: "calls", name: "Tool calls per task", better: "lower is better", fmt: (v) => v.toFixed(1), delta: pct },
+    { key: "secs", name: "Seconds per task", better: "lower is better", fmt: (v) => v.toFixed(1) + " s", delta: pct },
+    { key: "tokens", name: "Prompt tokens per task", better: "lower is better", fmt: (v) => v.toLocaleString("en-US"), delta: pct },
+  ];
+  const VERSIONS = [["before", "v0.4.0"], ["after", "v0.5 rewrite"]];
+
+  const tiles = $("#tiles");
+  tiles.innerHTML = METRICS.map((m) => `
+    <div class="tile" data-metric="${m.key}">
+      <div><div class="name">${m.name}</div><div class="better">${m.better}</div></div>
+      <div class="big" data-big></div>
+      <div class="delta" data-delta></div>
+      <div class="bars">
+        ${VERSIONS.map(([k, label]) => `
+          <div class="bar-row ${k}" data-v="${k}" role="img" aria-label="">
+            <div class="track"><div class="bar" style="width:0"></div><span class="val"></span></div>
+          </div>`).join("")}
+      </div>
+    </div>`).join("");
+
+  let model = "4b";
+  function draw() {
+    const d = DATA[model];
+    METRICS.forEach((m) => {
+      const t = tiles.querySelector(`[data-metric="${m.key}"]`);
+      const a = d.before[m.key], b = d.after[m.key];
+      const max = Math.max(a, b);
+      t.querySelector("[data-big]").textContent = m.fmt(b);
+      t.querySelector("[data-delta]").textContent = `${m.delta(a, b)} vs v0.4.0`;
+      VERSIONS.forEach(([k, label]) => {
+        const row = t.querySelector(`[data-v="${k}"]`);
+        const v = d[k][m.key];
+        // Leave room for the value label: the longest bar takes 72% of the row.
+        row.querySelector(".bar").style.width = `${(v / max) * 72}%`;
+        row.querySelector(".val").textContent = m.fmt(v);
+        row.setAttribute("aria-label", `${d.name}, ${label}: ${m.name} ${m.fmt(v)}`);
+        row.dataset.tip = `<b>${d.name} · ${label}</b><br>${m.name}: ${m.fmt(v)}${m.key === "pass" ? ` (${d[k].runs} runs)` : ""}`;
+      });
+    });
+    $("#vizNote").textContent = d.note;
+    document.querySelectorAll(".seg-ctl button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.model === model)));
+  }
+  document.querySelectorAll(".seg-ctl button").forEach((b) => b.addEventListener("click", () => { model = b.dataset.model; draw(); }));
+  draw();
+
+  /* Hover tooltip: the whole row is the hit target, not just the bar. */
+  const tip = $("#tip");
+  tiles.addEventListener("pointermove", (e) => {
+    const row = e.target.closest(".bar-row");
+    if (!row) { tip.classList.remove("on"); return; }
+    tip.innerHTML = row.dataset.tip;
+    const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = e.clientX + pad, y = e.clientY - h - pad;
+    if (x + w > innerWidth - 8) x = e.clientX - w - pad;
+    if (y < 8) y = e.clientY + pad;
+    tip.style.left = x + "px"; tip.style.top = y + "px";
+    tip.classList.add("on");
+  });
+  tiles.addEventListener("pointerleave", () => tip.classList.remove("on"));
+  addEventListener("scroll", () => tip.classList.remove("on"), { passive: true });
+})();
+</script>
+</body>
+</html>

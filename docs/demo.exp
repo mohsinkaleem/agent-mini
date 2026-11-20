@@ -1,0 +1,41 @@
+# Records the README demo (docs/demo.gif): one chat that edits a file with
+# approval, then undoes it. Needs expect, asciinema 3, agg and Ollama with qwen3.5:9b.
+#
+#   mkdir -p /tmp/demo/ws && printf 'eggs\nbread\ncoffee\n' > /tmp/demo/ws/todo.txt
+#   echo '{"workspace": "/tmp/demo/ws", "tools": {"confirm": ["shell", "write_file", "edit_file"]}}' > /tmp/demo/config.json
+#   AGENT_MINI_HOME=/tmp/demo asciinema rec --headless --window-size 96x26 -c "expect docs/demo.exp" demo.cast
+#   agg --theme github-dark --font-size 15 --idle-time-limit 3 --last-frame-duration 5 demo.cast docs/demo.gif
+#
+# Small models vary from run to run: keep a take that reads the file and then edits it.
+# Run any message first so the model is loaded, or the first reply is slow.
+
+set timeout 120
+set send_human {.07 .14 1 .04 .3}
+spawn -noecho agent-mini chat
+expect "You:"
+sleep 1.2
+send -h "Add \"buy milk\" to todo.txt\r"
+
+# Show the diff before approving a file change; approve anything else.
+set file_tool 0
+set shown_diff 0
+expect {
+  -re {(write_file|edit_file)[^\n]*needs approval} { set file_tool 1; exp_continue }
+  -re {shell[^\n]*needs approval} { set file_tool 0; exp_continue }
+  "Allow?" {
+    if {$file_tool && !$shown_diff} {
+      sleep 1.2; send -h "d\r"; set shown_diff 1
+    } else {
+      sleep 2.5; send -h "y\r"; set shown_diff 0
+    }
+    exp_continue
+  }
+  "You:" {}
+  timeout { exit 1 }
+}
+sleep 2.5
+send -h "/undo\r"
+expect "You:"
+sleep 2.5
+send -h "exit\r"
+expect eof
